@@ -63,10 +63,15 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 ## Architecture (file map, all under `screen_translator/`)
 
-- `app.py` — tray/menu app + orchestration. Single in-flight job (`_busy`), worker
-  jobs (`_Job` region/live, `_ScreenJob` full-screen) run OCR+translate off the UI
-  thread and emit results via signals. Hold-mode handlers, history persistence,
-  settings apply, hotkey setup.
+- `app.py` — tray/menu UI shell + wiring. Hold-mode handlers, history persistence,
+  settings apply, hotkey setup, menu building. Delegates the heavy lifting:
+  - `jobs.py` — worker `QRunnable`s (`Job` region/live, `ScreenJob` full-screen) run
+    OCR+translate off the UI thread and emit results via signals. `ScreenJob` fans
+    per-block translate calls out concurrently (bounded executor; lock-guarded cache).
+  - `pipeline.py` — pure, Qt-free logic the jobs call (scale/box mapping, junk
+    filter, dedup, colour sampling). Unit-tested in `tests/`.
+  - `gating.py` — `BusyGate`, the single-in-flight (`gate.busy`) + hold-retry state
+    machine. Unit-tested in `tests/`.
 - `capture.py` — screen capture. **macOS: native Quartz** `CGDisplayCreateImageForRect`
   (full Retina res). Else mss. Logical-coords in; returns RGB PIL image. `is_black()`.
 - `ocr.py` — pluggable OCR. `VisionOCR` (Apple Vision via ocrmac) + `RapidOCRBackend`.
@@ -85,6 +90,7 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 - `history.py` — JSONL + PNG persistence + `index.html` renderer.
 - `settings_dialog.py`, `languages.py`, `config.py`, `macos.py` (NSWindow
   float-over-fullscreen tweaks + activation-policy / accessory helpers).
+- `tests/` — `unittest` coverage for `pipeline.py` + `gating.py` (stdlib only).
 - `tools/smoke_test.py` — headless OCR+translate verification.
 
 ---
@@ -95,7 +101,8 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   to **Quartz** for native 2× Retina pixels (much better OCR). Fallback to mss off-mac.
 - **NEVER assume devicePixelRatio when mapping OCR coords.** Self-calibrate:
   `scale = captured_image_size / logical_screen_size`. (Assuming dpr=2 once caused
-  translations to land at half-height.) `_ScreenJob` does this.
+  translations to land at half-height.) `pipeline.compute_scale`/`map_block` do
+  this, called from `jobs.ScreenJob`.
 - **Apple Vision can't read Cyrillic** (ru/uk). `make_ocr` routes Cyrillic source to
   RapidOCR and errors clearly if it's not installed (rather than returning garbage).
 - Vision bbox is normalized 0-1, **origin bottom-left** → flip Y: `(1-y-h)*H`.
@@ -125,10 +132,11 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   dead code after a `return` in `HistoryWriter._downscaled`, so nothing was logged
   (screenshots saved, but "Open translation log" was always empty). Fixed — the write
   is back in `add()`.
-- **In-place fill is sampled OFF the UI thread** in `_ScreenJob` from the captured PIL
-  image (the click-through overlay can't read screen pixels at paint time) and passed
-  through as plain `(r,g,b)` tuples — `QColor` is built only in the overlay's paint on
-  the UI thread. `_ScreenJobSignals.done` now carries 5-tuples
+- **In-place fill is sampled OFF the UI thread** by `pipeline.sample_block_colors`,
+  called in `jobs.ScreenJob` from the captured PIL image (the click-through overlay
+  can't read screen pixels at paint time) and passed through as plain `(r,g,b)`
+  tuples — `QColor` is built only in the overlay's paint on the UI thread.
+  `ScreenJob`'s `done` signal carries 5-tuples
   `(rect, orig, translated, fill_rgb, text_rgb)`; in-place layout anchors on the
   original (no grow/de-overlap) so the erase aligns.
 - **Translation backend mirrors OCR**: built lazily on the UI thread
@@ -169,6 +177,7 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 ## How changes were verified (no full GUI in headless)
 
 - `./.venv/bin/python -m py_compile screen_translator/*.py`
+- `./.venv/bin/python -m unittest discover -s tests -t .` (pipeline + gating logic)
 - `./.venv/bin/python tools/smoke_test.py` (real Vision OCR + Google translate)
 - `QT_QPA_PLATFORM=offscreen ./.venv/bin/python -c "from screen_translator.app import App; App()..."`
   for constructing widgets/menus and unit-testing logic without a display.

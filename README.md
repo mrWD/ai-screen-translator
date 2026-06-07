@@ -158,7 +158,10 @@ Keys: `source`, `target`, `ocr_engine` (`auto`/`vision`/`rapidocr`),
 
 ```
 screen_translator/
-  app.py             # tray app + orchestration (hotkey→capture→OCR→translate→overlay)
+  app.py             # tray/UI shell + wiring (hotkey→capture→OCR→translate→overlay)
+  jobs.py            # off-thread OCR+translate workers (QRunnables) on the thread pool
+  pipeline.py        # pure logic: scale/box mapping, junk filter, dedup, colour sampling
+  gating.py          # single-in-flight-job + hold-key-retry state machine (no Qt)
   config.py          # persisted settings
   capture.py         # screen capture: native Quartz (Retina 2x) on macOS, else mss
   hotkey_edit.py     # click-to-record hotkey field (Qt key -> pynput string)
@@ -172,6 +175,7 @@ screen_translator/
   hotkeys.py         # global hotkeys (pynput) bridged to Qt
   macos.py           # NSWindow tweaks (float over fullscreen) + activation policy
   languages.py       # language list for the UI
+tests/               # unit tests for pipeline.py + gating.py (stdlib unittest)
 tools/smoke_test.py  # headless OCR+translate verification
 ```
 

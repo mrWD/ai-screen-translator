@@ -14,6 +14,8 @@ and any caller that just wants the default free engine.
 
 from __future__ import annotations
 
+import threading
+
 from deep_translator import GoogleTranslator
 
 _CACHE_MAX = 512
@@ -28,16 +30,21 @@ class TranslateBackend:
     the uniform TranslateError contract. Subclasses implement `_translate`."""
 
     name = "base"
+    # True if `translate` may be called from several threads at once (full-screen
+    # mode fans requests out). Network backends are fine; Argos overrides to False.
+    parallel_safe = True
 
     def __init__(self) -> None:
         self._cache: "dict[tuple[str, str, str], str]" = {}
+        self._lock = threading.Lock()  # guards the cache; the network call runs unlocked
 
     def translate(self, text: str, source: str, target: str) -> str:
         text = text.strip()
         if not text:
             return ""
         key = (source, target, text)
-        cached = self._cache.get(key)
+        with self._lock:
+            cached = self._cache.get(key)
         if cached is not None:
             return cached
         try:
@@ -46,9 +53,10 @@ class TranslateBackend:
             raise  # already a clear, user-facing message — keep it
         except Exception as exc:  # network / endpoint / quota errors
             raise TranslateError(str(exc)) from exc
-        if len(self._cache) >= _CACHE_MAX:
-            self._cache.pop(next(iter(self._cache)))  # drop oldest (FIFO bound)
-        self._cache[key] = result
+        with self._lock:
+            if len(self._cache) >= _CACHE_MAX:
+                self._cache.pop(next(iter(self._cache)))  # drop oldest (FIFO bound)
+            self._cache[key] = result
         return result
 
     def _translate(self, text: str, source: str, target: str) -> str:
@@ -99,6 +107,7 @@ class DeepLBackend(TranslateBackend):
 
 class ArgosBackend(TranslateBackend):
     name = "offline"
+    parallel_safe = False  # argostranslate's module-level state isn't thread-safe
 
     def __init__(self, model_dir: str = "") -> None:
         super().__init__()

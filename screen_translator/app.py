@@ -1,185 +1,29 @@
-"""Tray application wiring: hotkeys -> capture -> OCR -> translate -> overlay."""
+"""Tray application wiring: hotkeys -> capture -> OCR -> translate -> overlay.
+
+This module is the UI shell + composition root. The heavy lifting lives elsewhere:
+the off-thread OCR/translate workers in `jobs.py`, their framework-free logic in
+`pipeline.py`, and the single-in-flight-job state machine in `gating.py`.
+"""
 
 from __future__ import annotations
 
 import sys
 
 from PySide6 import QtGui, QtWidgets
-from PySide6.QtCore import (
-    QObject,
-    QPoint,
-    QRect,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    QUrl,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer, QUrl
 
 from . import capture, changes, languages
 from .config import Config, Region, history_dir
+from .gating import BusyGate
 from .history import HistoryWriter, build_index
 from .hotkeys import HotkeyManager
+from .jobs import Job, ScreenJob
 from .ocr import OCRBackend, make_ocr
 from .overlay import Overlay
 from .region_selector import RegionSelector
 from .screen_overlay import ScreenOverlay
 from .settings_dialog import SettingsDialog
 from .translate import TranslateBackend, make_translator
-
-
-class _JobSignals(QObject):
-    done = Signal(str, object, str)  # translated text, region QRect, ocr text
-    unchanged = Signal()             # live mode: OCR text same as last -> no-op
-    failed = Signal(str)
-
-
-class _Job(QRunnable):
-    """Runs OCR + translation off the UI thread (translation hits the network).
-
-    In live mode (`dedup=True`) it short-circuits when the OCR'd text matches the
-    last result, so we never re-translate or churn the overlay on an unchanged
-    line even while the game's background animates."""
-
-    def __init__(
-        self,
-        ocr: OCRBackend,
-        image,
-        region_rect: QRect,
-        source: str,
-        target: str,
-        last_text: "str | None",
-        translator: TranslateBackend,
-    ) -> None:
-        super().__init__()
-        self.signals = _JobSignals()
-        self._ocr = ocr
-        self._translator = translator
-        self._image = image
-        self._region_rect = region_rect
-        self._source = source
-        self._target = target
-        self._last_text = last_text  # None in single-shot -> always translate
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            text = self._ocr.recognize(self._image, self._source).strip()
-            if not text:
-                if self._last_text is None:
-                    self.signals.done.emit("(no text found)", self._region_rect, "")
-                else:
-                    self.signals.unchanged.emit()  # live: text vanished, keep panel
-                return
-            if self._last_text is not None and text == self._last_text:
-                self.signals.unchanged.emit()
-                return
-            translated = self._translator.translate(text, self._source, self._target)
-            self.signals.done.emit(translated, self._region_rect, text)
-        except Exception as exc:  # surfaced to the user via the tray
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
-
-
-def _sample_block_colors(image, bx, by, bw, bh):
-    """For in-place mode: sample a background fill colour from the ring just
-    outside the OCR box (median, robust to the text glyphs) and pick a contrasting
-    text colour by luminance. Runs on the worker thread, so it returns plain int
-    RGB tuples — QColor is constructed later on the UI thread."""
-    import numpy as np
-
-    arr = np.asarray(image.convert("RGB"))
-    h, w = arr.shape[:2]
-    bx0, by0, bx1, by1 = int(bx), int(by), int(bx + bw), int(by + bh)
-    pad = max(2, int(min(bw, bh) * 0.3))
-    ox0, oy0 = max(0, bx0 - pad), max(0, by0 - pad)
-    ox1, oy1 = min(w, bx1 + pad), min(h, by1 + pad)
-    outer = arr[oy0:oy1, ox0:ox1]
-    if outer.size == 0:
-        outer = arr
-    # Mask out the inner text box so glyph pixels don't bias the background median.
-    # Clamp to the outer slice so a block touching the image edge (negative mapped
-    # origin, e.g. a Vision top-edge box) is still masked, not skipped.
-    mask = np.ones(outer.shape[:2], dtype=bool)
-    iy0, ix0 = max(0, by0 - oy0), max(0, bx0 - ox0)
-    iy1, ix1 = min(outer.shape[0], by1 - oy0), min(outer.shape[1], bx1 - ox0)
-    if iy1 > iy0 and ix1 > ix0:
-        mask[iy0:iy1, ix0:ix1] = False
-    ring = outer[mask]
-    if ring.size == 0:
-        ring = outer.reshape(-1, 3)
-    fill = np.median(ring.reshape(-1, 3), axis=0)
-    r, g, b = int(fill[0]), int(fill[1]), int(fill[2])
-    luma = 0.299 * r + 0.587 * g + 0.114 * b
-    text = (20, 20, 24) if luma >= 140 else (240, 240, 245)
-    return (r, g, b), text
-
-
-class _ScreenJobSignals(QObject):
-    # list of (screen-logical QRect, original text, translated text, fill_rgb, text_rgb);
-    # the two rgb int-tuples are sampled for in-place mode, or None when it's off.
-    done = Signal(object)
-    failed = Signal(str)
-
-
-class _ScreenJob(QRunnable):
-    """Full-screen mode: OCR every text block, translate each, and map each
-    block's image-pixel box to screen-logical coordinates for in-place overlay."""
-
-    def __init__(self, ocr, translator, image, geom_x, geom_y, geom_w, geom_h,
-                 source, target, inplace=False) -> None:
-        super().__init__()
-        self.signals = _ScreenJobSignals()
-        self._ocr = ocr
-        self._translator = translator
-        self._image = image
-        self._gx = geom_x
-        self._gy = geom_y
-        self._gw = geom_w
-        self._gh = geom_h
-        self._source = source
-        self._target = target
-        self._inplace = inplace
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            blocks = self._ocr.recognize_blocks(self._image, self._source)
-            # Self-calibrate: map image pixels -> logical screen using the ACTUAL
-            # captured image size, not an assumed dpr (mss may capture at 1x or 2x).
-            img_w, img_h = self._image.size
-            scale_x = img_w / self._gw if self._gw else 1.0
-            scale_y = img_h / self._gh if self._gh else 1.0
-            results = []
-            for block in blocks:
-                rect = QRect(
-                    int(self._gx + block.x / scale_x),
-                    int(self._gy + block.y / scale_y),
-                    max(1, int(block.w / scale_x)),
-                    max(1, int(block.h / scale_y)),
-                )
-                # junk filter: skip tiny blocks (icons/noise) and the macOS
-                # menu-bar strip — done BEFORE translating to save network calls.
-                if rect.height() < 8 or rect.width() < 6:
-                    continue
-                if sys.platform == "darwin" and self._gy == 0 and rect.y() < 24:
-                    continue  # menu bar only exists on the primary display's top
-                translated = self._translator.translate(block.text, self._source, self._target)
-                if not translated:
-                    continue
-                fill_rgb = text_rgb = None
-                if self._inplace:
-                    try:
-                        fill_rgb, text_rgb = _sample_block_colors(
-                            self._image, block.x, block.y, block.w, block.h
-                        )
-                    except Exception:
-                        fill_rgb = text_rgb = None  # degrade to the translucent box
-                results.append((rect, block.text, translated, fill_rgb, text_rgb))
-            self.signals.done.emit(results)
-        except Exception as exc:
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 class App:
@@ -196,13 +40,11 @@ class App:
         self._last_fs_image = None       # most recent full-screen frame (for history)
         self._last_result = None         # (original, translation) for "Copy last result"
         self._fs_is_hold = False         # current full-screen request came from the hold key
-        self._hold_active = False        # the hold key is currently held down
-        self._hold_pending = False       # hold pressed while busy -> retry when free
-        # One in-flight job at a time. Holding the reference keeps the QRunnable
-        # alive (QThreadPool only stores a C++ pointer), and the busy flag stops
-        # overlapping captures from racing on the shared OCR engine / cache.
-        self._current_job: _Job | None = None
-        self._busy = False
+        # Single in-flight job, hold-key retry, and live-mode dedup: the boolean
+        # policy lives in BusyGate; we only keep the QRunnable ref here so the
+        # QThreadPool's C++ object isn't GC'd out from under the running job.
+        self.gate = BusyGate()
+        self._current_job = None
 
         # Live mode: periodically re-capture the saved region and re-translate
         # only when its content changes.
@@ -227,8 +69,7 @@ class App:
         self._apply_activation_policy()  # after the tray/menubar native objects exist
 
     def _setup_hotkeys(self) -> None:
-        self._hold_active = False  # clean slate (a held key won't deliver a release)
-        self._hold_pending = False
+        self.gate.reset_hold()  # clean slate (a held key won't deliver a release)
         if getattr(self, "hotkeys", None) is not None:
             self.hotkeys.stop()  # stop the old listener thread before replacing it
         self.hotkeys = HotkeyManager(
@@ -320,7 +161,7 @@ class App:
 
     # ---- actions ----
     def translate_now(self) -> None:
-        if self._busy:
+        if self.gate.busy:
             return  # a translation is already in flight
         if self.cfg.region is None:
             self.reselect_region()
@@ -363,12 +204,12 @@ class App:
             return
         self._last_capture_image = image  # kept for history persistence in _on_job_done
         last_text = self._last_ocr_text if dedup else None
-        job = _Job(ocr, image, rect, self.cfg.source, self.cfg.target, last_text, translator)
+        job = Job(ocr, image, rect, self.cfg.source, self.cfg.target, last_text, translator)
         job.signals.done.connect(self._on_job_done)
         job.signals.unchanged.connect(self._on_job_unchanged)
         job.signals.failed.connect(self._on_job_failed)
         self._current_job = job
-        self._busy = True
+        self.gate.try_start()
         self.pool.start(job)
 
     # ---- live mode ----
@@ -398,7 +239,7 @@ class App:
         self._notify("Live mode OFF", "")
 
     def _live_tick(self) -> None:
-        if self._busy or self.cfg.region is None:
+        if self.gate.busy or self.cfg.region is None:
             return
         region = self._region_with_live_dpr(self.cfg.region)
         try:
@@ -423,10 +264,8 @@ class App:
         return Region(region.x, region.y, region.w, region.h, screen.devicePixelRatio())
 
     def _finish_job(self) -> None:
-        self._busy = False
         self._current_job = None
-        if self._hold_pending and self._hold_active:  # a hold waited for this job
-            self._hold_pending = False
+        if self.gate.finish():  # a hold waited for this job and the key is still down
             QTimer.singleShot(0, lambda: self.translate_fullscreen(is_hold=True))
 
     def _on_job_done(self, text: str, rect: QRect, ocr_text: str) -> None:
@@ -479,22 +318,18 @@ class App:
 
     # ---- full-screen translation ----
     def translate_fullscreen(self, is_hold: bool = False) -> None:
-        if self._busy:
+        if self.gate.busy:
             return
         self._fs_is_hold = is_hold
         self._hide_overlays()  # don't capture our own previous translations
         QTimer.singleShot(80, self._capture_fullscreen)
 
     def _on_hold_start(self) -> None:
-        self._hold_active = True
-        if self._busy:
-            self._hold_pending = True  # something's running; fire as soon as it frees
-        else:
+        if self.gate.hold_start():  # not busy -> fire now; busy -> queued for _finish_job
             self.translate_fullscreen(is_hold=True)
 
     def _on_hold_end(self) -> None:
-        self._hold_active = False
-        self._hold_pending = False
+        self.gate.hold_end()
         self.screen_overlay.hide()  # release -> dismiss the translation
 
     def _capture_fullscreen(self) -> None:
@@ -527,14 +362,14 @@ class App:
             return
         self._fs_screen = screen
         self._last_fs_image = image  # kept for history persistence in _on_screen_done
-        job = _ScreenJob(
+        job = ScreenJob(
             ocr, translator, image, geom.x(), geom.y(), geom.width(), geom.height(),
             self.cfg.source, self.cfg.target, self.cfg.overlay_inplace,
         )
         job.signals.done.connect(self._on_screen_done)
         job.signals.failed.connect(self._on_job_failed)
         self._current_job = job
-        self._busy = True
+        self.gate.try_start()
         self.pool.start(job)
 
     def _on_screen_done(self, blocks) -> None:
@@ -544,7 +379,7 @@ class App:
             if not is_hold:  # don't nag on every quick hold-peek
                 self._notify("Full screen", "No text found on screen.")
             return
-        if is_hold and not self._hold_active:
+        if is_hold and not self.gate.hold_active:
             return  # key released before the result arrived — don't flash it
         overlay_blocks = [
             (rect, translated, fill_rgb, text_rgb)
