@@ -1,0 +1,22 @@
+# Core (cross-platform)
+PySide6>=6.6
+mss>=9.0
+Pillow>=10.0
+numpy>=1.24
+deep-translator>=1.11
+pynput>=1.7
+
+# macOS OCR (Apple Vision) + window tweaks for GeForce Now fullscreen overlay
+ocrmac>=1.0 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0 ; sys_platform == "darwin"
+
+# Optional cross-platform / Cyrillic-source OCR (Windows, Linux, or ru/uk on macOS).
+# Uncomment to enable the "rapidocr" engine:
+# rapidocr-onnxruntime>=1.3
+
+# DeepL translation (needs an API key). Uncomment to enable the "deepl" engine:
+# deepl>=1.16
+
+# Offline translation (Argos Translate; downloads language packs on first use).
+# Uncomment to enable the "offline" engine:
+# argostranslate>=1.9
