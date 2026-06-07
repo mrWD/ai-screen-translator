@@ -69,20 +69,25 @@ drawn in its place — closer to a true "replace the text" look. Boxes stay anch
 on the original so the cover-up aligns; the overlay-opacity setting is ignored here
 (the fill must be solid to erase).
 
-**Hold to translate** (`F8` by default): hold the key to see the whole-screen
-translation, release to dismiss it — handy for a quick peek without toggling.
+**Hold to translate** (**Right Option `⌥`** by default): hold the key to see the
+whole-screen translation, release to dismiss it — handy for a quick peek without
+toggling. (Right Option is used because it does nothing on its own in macOS,
+unlike the F-keys — F7/F8/F9 are media ⏮/⏯/⏭ and would launch Music.)
 
 | Hotkey | Action |
 |---|---|
 | `Cmd+Shift+T` | Capture the saved region once, translate, show panel |
 | `Cmd+Shift+F` | Translate the whole screen, in place |
-| `F8` (hold) | Show whole-screen translation while held, hide on release |
+| Right Option `⌥` (hold) | Show whole-screen translation while held, hide on release |
 | `Cmd+Shift+L` | Toggle live (auto-translate) mode on the region |
 | `Cmd+Shift+R` | Re-select the region |
 | `Cmd+Shift+H` | Hide overlays |
 
 **Changing hotkeys:** open **Settings**, click a hotkey field, and press the
-key(s) you want — single keys like **F6** work, as do chords like `Cmd+Shift+T`.
+key(s) you want — single keys work, as do chords like `Cmd+Shift+T`. Note that on
+macOS the F-keys are media/brightness keys by default (so they trigger those
+actions unless you enable *System Settings → Keyboard → "Use F1, F2, etc. keys as
+standard function keys"*).
 
 ## Saving & reviewing (after the game)
 

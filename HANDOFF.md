@@ -45,7 +45,7 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 |---|---|
 | `Cmd+Shift+T` | Translate the saved region once (panel appears beside it) |
 | `Cmd+Shift+F` | Translate the whole screen, in place |
-| `F8` (hold) | Show whole-screen translation **while held**, hide on release |
+| Right Option `⌥` (hold) | Show whole-screen translation **while held**, hide on release |
 | `Cmd+Shift+L` | Toggle live mode (auto re-translate the region on change) |
 | `Cmd+Shift+R` | Re-select the region |
 | `Cmd+Shift+H` | Hide overlays |
@@ -158,8 +158,8 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   installed Argos pack actually translate.
 
 **Still open:**
-- **Verify `F8` hold + hotkey recording on the real machine** — the two-listener crash
-  fix still needs a live confirmation.
+- **Verify Right Option (`<alt_r>`) hold + hotkey recording on the real machine** — the
+  two-listener crash fix still needs a live confirmation.
 - Windows/Linux native capture backends (currently mss fallback there).
 - LLM / context-aware translation tiers.
 - Package as a signed `.app` (so permissions stick to the app, not Terminal).
@@ -186,5 +186,5 @@ coords, history, hotkeys); fixes applied.
 1. Open the new chat with the working directory set to **this folder**
    (`/Users/viktor/Projects/ai-screen-translator`).
 2. Tell it: *"Read HANDOFF.md and README.md, then continue."*
-3. The immediate next step is usually: confirm `F8` hold + hotkey-recording work on
-   the machine, then pick from "open items" above.
+3. The immediate next step is usually: confirm Right Option hold + hotkey-recording
+   work on the machine, then pick from "open items" above.
