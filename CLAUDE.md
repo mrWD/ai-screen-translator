@@ -18,15 +18,18 @@ items) are kept current — read both before substantial work.
 ```bash
 ./run.sh                                   # create .venv, install deps, launch the app. Do NOT sudo — it breaks macOS permission prompts.
 ./.venv/bin/python tools/smoke_test.py     # headless core check: real Vision OCR + Google translate, no GUI/permissions
+./.venv/bin/python -m unittest discover -s tests -t .   # unit tests for pipeline.py + gating.py (stdlib only)
 ./.venv/bin/python -m py_compile screen_translator/*.py   # fast syntax check
 QT_QPA_PLATFORM=offscreen ./.venv/bin/python -c "from screen_translator.app import App; App()"  # build widgets/menus/logic without a display
 ./.venv/bin/python -m screen_translator    # run directly (skips the venv-setup step in run.sh)
 ```
 
-There is **no test suite, linter, or formatter** configured. Verification is:
-`py_compile` → `smoke_test.py` → offscreen construction → the user runs `./run.sh`
-for the interactive flow (region select, overlay over a game, real hotkeys). That
-last step is the standing feedback loop — the GUI/capture/hotkey path can only be
+There is **no linter or formatter** configured, and no GUI test harness. The pure
+logic (`pipeline.py`, `gating.py`) has `unittest` coverage under `tests/`;
+everything Qt/capture/hotkey-bound is still verified by:
+`py_compile` → `unittest` → `smoke_test.py` → offscreen construction → the user
+runs `./run.sh` for the interactive flow (region select, overlay over a game, real
+hotkeys). That last step is the standing feedback loop — the GUI/capture/hotkey path can only be
 validated by the user on the real machine.
 
 To enable the Cyrillic/cross-platform OCR engine, uncomment `rapidocr-onnxruntime`
@@ -38,17 +41,26 @@ All code is in `screen_translator/`; entry point is `__main__.py` → `app.main(
 The README "Project layout" section maps every file. The big-picture pieces that
 span files:
 
-**Orchestration & threading (`app.py`).** `App` wires hotkeys/menu to the
-pipeline. OCR + network translation run **off the UI thread** as `QRunnable`s on
-the global `QThreadPool`, reporting back via Qt `Signal`s:
-- `_Job` — region/live single-region translate (with live-mode dedup).
-- `_ScreenJob` — full-screen: OCR every block, translate each, map boxes to screen.
+**Orchestration & threading.** `App` (`app.py`) is the UI shell + wiring: it
+connects hotkeys/menu to the pipeline. The work is split across modules so the
+non-Qt logic is testable:
+- `jobs.py` — `Job` (region/live single-region translate, with live-mode dedup)
+  and `ScreenJob` (full-screen: OCR every block, translate each, map boxes to
+  screen). These `QRunnable`s run **off the UI thread** on the global
+  `QThreadPool`, reporting back via Qt `Signal`s. `ScreenJob` fans its per-block
+  translate calls out concurrently (bounded `ThreadPoolExecutor`); the translator
+  cache is lock-guarded and a backend opts out via `parallel_safe = False` (Argos).
+- `pipeline.py` — **pure, Qt-free** functions used by the jobs: `compute_scale`,
+  `map_block`, `is_junk_block`, `dedup_outcome`, `sample_block_colors`. Unit-tested.
+- `gating.py` — `BusyGate`, the single-in-flight-job + hold-retry **state machine**
+  (no Qt). Unit-tested.
 
-There is **one in-flight job at a time** (`self._busy`). A new trigger while busy
-is dropped, *except* the hold key, which sets `_hold_pending` to retry when free.
-Always keep a Python ref to the running `QRunnable` (`self._current_job`) — the
-pool only stores a C++ pointer, so a GC'd wrapper tears down its C++ object. The
-same applies to menus/action-groups (see `_rebuild_menu`'s explicit ref lists).
+There is **one in-flight job at a time** (`App.gate.busy`). A new trigger while
+busy is dropped, *except* the hold key, which `BusyGate` remembers (`hold_pending`)
+and replays when free — only if still held. Always keep a Python ref to the running
+`QRunnable` (`self._current_job`) — the pool only stores a C++ pointer, so a GC'd
+wrapper tears down its C++ object. The same applies to menus/action-groups (see
+`_rebuild_menu`'s explicit ref lists).
 
 **Capture coordinate self-calibration — the load-bearing invariant.** Capture
 takes **logical (Qt) point** coordinates. On macOS, `capture.grab` uses Quartz
@@ -56,7 +68,8 @@ takes **logical (Qt) point** coordinates. On macOS, `capture.grab` uses Quartz
 platforms fall back to `mss` (1× on macOS, hence worse OCR). **Never assume a
 fixed devicePixelRatio when mapping OCR pixel coords back to the screen.** Derive
 it from the actual returned image size vs. the logical region:
-`scale = captured_image_size / logical_region_size` (see `_ScreenJob.run`).
+`scale = captured_image_size / logical_region_size` (see `pipeline.compute_scale`
+/ `pipeline.map_block`, called from `jobs.ScreenJob.run`).
 Assuming dpr=2 once put translations at half-height. `_display_id_for_region`
 picks the display under the region; `CGDisplayCreateImageForRect`'s rect is in
 that display's **local** space, so `_grab_quartz` subtracts the display's bounds
@@ -93,9 +106,9 @@ hotkeys (pynput `HotKey` objects) and the hold key. Two listeners segfault macOS
 records a Qt keypress and converts it to the pynput string format used in config.
 
 **Live mode (`app.py` + `changes.py`).** A `QTimer` re-captures the saved region;
-`changes.signature`/`changes.changed` skip OCR on frozen frames, and `_Job` dedup
-skips re-translating when the OCR text is unchanged — so an animated background
-doesn't cause constant re-translation.
+`changes.signature`/`changes.changed` skip OCR on frozen frames, and `Job`'s dedup
+(`pipeline.dedup_outcome`) skips re-translating when the OCR text is unchanged — so
+an animated background doesn't cause constant re-translation.
 
 **Overlays.** `overlay.py` (region panel, anchored *beside* the region so it's
 never re-captured) and `screen_overlay.py` (full-screen). Both are click-through
@@ -105,10 +118,11 @@ last result", not the overlay. `screen_overlay` has two modes: the default
 translucent boxes (grow-to-fit + de-overlap) and opt-in **in-place** mode
 (`overlay_inplace`) that paints an opaque, colour-sampled fill *over* the original
 text and draws the translation in place, boxes anchored on the original so the
-erase aligns. The fill/text colours are sampled from the captured PIL image in
-`_ScreenJob` **on the worker thread** and passed through as plain `(r,g,b)` tuples
-(`_ScreenJobSignals.done` carries 5-tuples) — `QColor` is constructed only in the
-overlay's paint on the UI thread (never build `QtGui` objects off the UI thread).
+erase aligns. The fill/text colours are sampled from the captured PIL image by
+`pipeline.sample_block_colors`, called in `ScreenJob` **on the worker thread**, and
+passed through as plain `(r,g,b)` tuples (`ScreenJob`'s `done` signal carries
+5-tuples) — `QColor` is constructed only in the overlay's paint on the UI thread
+(never build `QtGui` objects off the UI thread).
 
 **Config & history.** `config.py` persists a `Config` dataclass as JSON to the OS
 config dir (macOS: `~/Library/Application Support/ai-screen-translator/`), **not**

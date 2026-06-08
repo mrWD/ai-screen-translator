@@ -56,7 +56,9 @@ class Config:
     hotkey_reselect: str = f"{_MOD}+<shift>+r"
     hotkey_hide: str = f"{_MOD}+<shift>+h"
     hotkey_live: str = f"{_MOD}+<shift>+l"
-    hotkey_hold: str = "<f8>"  # hold to show full-screen translation, release to hide
+    hotkey_hold: str = "<alt_r>"  # hold to show full-screen translation, release to hide.
+    # Right Option: does nothing on its own in macOS and isn't a reserved shortcut,
+    # unlike the F-keys (F7/F8/F9 are media ⏮/⏯/⏭ by default and launch Music).
     live_interval_ms: int = 800
     overlay_font_pt: int = 18
     overlay_opacity: float = 0.85
