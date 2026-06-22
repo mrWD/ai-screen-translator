@@ -31,7 +31,17 @@ import logging
 import sys
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from pynput import keyboard
+
+# hotkeys.py is imported at the top of app.py, so a missing/broken pynput would
+# otherwise crash the whole app before app.py's try/except around start() can show a
+# graceful "Hotkeys unavailable" message. Defer the failure to start() instead.
+try:
+    from pynput import keyboard
+except Exception as exc:  # pragma: no cover - only on a broken install
+    keyboard = None
+    _PYNPUT_IMPORT_ERROR: "Exception | None" = exc
+else:
+    _PYNPUT_IMPORT_ERROR = None
 
 _log = logging.getLogger(__name__)
 
@@ -150,6 +160,10 @@ class HotkeyManager(QObject):
         return fire
 
     def start(self) -> None:
+        if keyboard is None:  # pynput failed to import — surface it via app.py's handler
+            raise RuntimeError(
+                f"Global hotkeys need pynput, which failed to import: {_PYNPUT_IMPORT_ERROR}"
+            )
         self._hold_active = False
         self._suppress_current = False
         self._win_down = set()

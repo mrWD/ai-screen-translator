@@ -8,6 +8,7 @@ the off-thread OCR/translate workers in `jobs.py`, their framework-free logic in
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,17 @@ _log = logging.getLogger(__name__)
 # (slow, e.g. offline) translation finished — so the work isn't wasted, but it
 # still auto-hides instead of lingering forever.
 _HOLD_LINGER_MS = 7000
+
+
+def _is_wayland() -> bool:
+    """True on a Linux Wayland session, where pynput's X11 global-hotkey backend
+    receives no events. (XWayland still exposes DISPLAY, so require its absence.)"""
+    if not sys.platform.startswith("linux"):
+        return False
+    return (
+        os.environ.get("XDG_SESSION_TYPE") == "wayland"
+        or (bool(os.environ.get("WAYLAND_DISPLAY")) and not os.environ.get("DISPLAY"))
+    )
 
 
 class App:
@@ -100,6 +112,15 @@ class App:
             self.hotkeys.start()
         except Exception as exc:
             self._notify("Hotkeys unavailable", f"{exc}\nUse the menu-bar icon instead.")
+        if _is_wayland():
+            # pynput's X11 backend receives zero events under a pure-Wayland session,
+            # so global hotkeys silently never fire. Tell the user to use the menu.
+            _log.warning("Wayland session detected — global hotkeys won't fire (X11/XWayland only)")
+            self._notify(
+                "Global hotkeys need X11",
+                "On Wayland the hold-to-translate key won't fire — use the tray menu's "
+                "“Translate full screen” instead (or run an X11/XWayland session).",
+            )
 
     # ---- OCR backend (lazily built, rebuilt when the source language changes) ----
     def _get_ocr(self) -> OCRBackend:

@@ -36,8 +36,12 @@ full-screen hold is the only translate mode now.)
   - **Screen Recording** (capture) and **Accessibility** (global hotkeys).
   - Settings → Privacy & Security → … ; relaunch after granting.
 
-Platform: developed/tested on **macOS (Apple Silicon, Python 3.12)**. Cross-platform
-is a design goal (Windows/Linux) but only macOS is exercised so far.
+Platform: developed/tested on **macOS (Apple Silicon, Python 3.12)** — the exercised
+target. **Windows/Linux** are wired end-to-end (RapidOCR auto-installs instead of
+Vision, mss instead of Quartz with logical→physical dpr scaling, X11 hotkeys, a
+`run.bat` launcher) and pass the simulated-non-darwin tests, but still need real-
+hardware validation — see README "Quick start (Windows / Linux)" and the
+cross-platform gotchas below.
 
 ---
 
@@ -102,8 +106,20 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   `scale = captured_image_size / logical_screen_size`. (Assuming dpr=2 once caused
   translations to land at half-height.) `pipeline.compute_scale`/`map_block` do
   this, called from `jobs.ScreenJob`.
-- **Apple Vision can't read Cyrillic** (ru/uk). `make_ocr` routes Cyrillic source to
-  RapidOCR and errors clearly if it's not installed (rather than returning garbage).
+- **Windows/Linux capture must scale logical→physical (`_grab_mss`).** mss wants
+  **physical** pixels there, but the region is in logical Qt points — so multiply by
+  `region.dpr` (`scale = 1.0 if darwin else region.dpr`). Without it, a display scaled
+  >100% (125/150/200%, common on Windows) grabs a wrong/truncated area. macOS keeps
+  mss at 1× (it's just the Quartz fallback). Cross-platform invariant.
+- **Off-macOS OCR is RapidOCR, not Vision.** `rapidocr-onnxruntime` auto-installs via a
+  `; sys_platform != "darwin"` marker; `make_ocr` skips `vision` on non-darwin; and
+  `Config.load` coerces a macOS-origin `ocr_engine="vision"` back to `"auto"` so a
+  carried-over config.json still launches. These are the cross-platform launch invariants.
+- **Apple Vision support is level-dependent.** `fast` (default) reads ~30 scripts
+  incl. Cyrillic/CJK/Arabic/Thai; `accurate` only six Latin langs. `VisionOCR` queries
+  the supported set and only passes a `language_preference` hint that's in it, so
+  `accurate` + a non-Latin source degrades gracefully instead of `ocrmac` raising. A
+  `languages` entry with `vision_code=None` would route to RapidOCR as a source.
 - Vision bbox is normalized 0-1, **origin bottom-left** → flip Y: `(1-y-h)*H`.
 - **Two pynput listeners crash macOS** (segfault + `AXIsProcessTrusted` lazy-import
   race). Use ONE Listener for both chords (pynput `HotKey` objects) and hold

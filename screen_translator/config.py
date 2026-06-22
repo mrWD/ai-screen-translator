@@ -77,6 +77,11 @@ class Config:
         cfg = cls(**{k: v for k, v in data.items() if k in known})
         if cfg.translate_engine not in ("google", "offline"):
             cfg.translate_engine = "google"  # e.g. a stale "deepl" from an old config
+        if sys.platform != "darwin" and cfg.ocr_engine == "vision":
+            # Apple Vision is macOS-only; a config.json carried from a Mac would
+            # otherwise force an engine that can't build here. Let make_ocr route to
+            # the cross-platform RapidOCR instead of erroring on startup.
+            cfg.ocr_engine = "auto"
         return cfg
 
     def save(self) -> None:

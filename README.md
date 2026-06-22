@@ -39,6 +39,42 @@ You'll be prompted on first use; you may need to quit and relaunch after grantin
 
 ---
 
+## Quick start (Windows / Linux)
+
+> Cross-platform support is **functional but not yet hardware-tested** — macOS is
+> the primary, exercised target. On Windows/Linux the app uses the cross-platform
+> **RapidOCR** engine (auto-installed from `requirements.txt`) instead of Apple
+> Vision, and **mss** for capture. Expect rough edges; bug reports welcome.
+
+**Windows** (PowerShell or cmd, Python 3.12+):
+
+```bat
+cd ai-screen-translator
+run.bat            REM creates .venv, installs deps (incl. rapidocr), launches the tray app
+```
+
+**Linux** (X11 session, Python 3.12+):
+
+```bash
+cd ai-screen-translator
+./run.sh           # creates .venv, installs deps (incl. rapidocr), launches the tray app
+```
+
+Notes:
+- **OCR model**: the first run downloads the RapidOCR ONNX models (a few tens of MB).
+- **Linux needs a system tray** (GNOME may need the AppIndicator extension) and the
+  usual Qt xcb libs, e.g. on Debian/Ubuntu:
+  `sudo apt install libxcb-xinerama0 libxcb-cursor0`.
+- **Global hotkeys are X11-only.** Under **Wayland**, the hold-to-translate key won't
+  fire (the app detects this and tells you) — use the tray menu's **Translate full
+  screen**, or run an X11/XWayland session.
+- **Key suppression** (blocking a key's normal action) is **macOS/Windows only** —
+  the option is disabled on Linux.
+- High-DPI displays are handled (capture scales logical→physical coords), but the
+  exact behavior on mixed-DPI multi-monitor setups is untested.
+
+---
+
 ## How to use
 
 1. Launch the app — a 文 icon appears in the menu bar.
@@ -186,11 +222,12 @@ tools/smoke_test.py  # headless OCR+translate verification
 
 ## Known limitations / roadmap
 
-- **OCR**: Apple Vision can't read Cyrillic. For a Russian/Ukrainian *source*,
-  install `rapidocr-onnxruntime` and set `ocr_engine` to `rapidocr`.
+- **OCR**: macOS uses Apple Vision (its *fast* level reads ~30 scripts incl.
+  Cyrillic/CJK; *accurate* is Latin-only). Windows/Linux use **RapidOCR**
+  (auto-installed), which has no per-language hint — accuracy varies by language.
 - **Capture**: macOS uses native Quartz at full Retina resolution (crisp OCR);
-  other platforms fall back to `mss`. Windows/Linux native backends
-  (Windows.Graphics.Capture, PipeWire) are future work.
+  Windows/Linux fall back to `mss` (logical→physical coords scaled by DPI). Native
+  backends (Windows.Graphics.Capture, PipeWire) are future work.
 - **Multi-monitor**: macOS now captures from the display under the region; a
   region straddling two displays still only yields the chosen display's portion.
 - **Linux/Wayland**: global hotkeys and always-on-top are restricted; X11 works

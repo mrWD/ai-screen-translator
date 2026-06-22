@@ -8,6 +8,7 @@ footgun)."""
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 
 from PySide6 import QtWidgets
@@ -129,6 +130,10 @@ class SettingsDialog(QtWidgets.QDialog):
             "the translation runs. macOS needs Accessibility permission; F1/F2/media "
             "keys can't be caught — use a plain function key."
         )
+        if sys.platform.startswith("linux"):
+            # pynput exposes no per-event suppression hook on Linux (only macOS/Windows).
+            self._suppress.setEnabled(False)
+            self._suppress.setToolTip("Not supported on Linux (no global key-suppression hook).")
         form.addRow("Suppress", self._suppress)
 
         buttons = QtWidgets.QDialogButtonBox(
