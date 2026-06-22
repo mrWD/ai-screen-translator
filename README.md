@@ -5,9 +5,10 @@ a translation of the whole screen appears in an overlay over it, while held.
 
 **Pipeline:** hotkey → capture screen → OCR → translate → overlay.
 
-This is the v1 prototype: Python + PySide6, Apple Vision OCR on macOS, and the
-**free Google Translate** endpoint (no API key). It is architected so the OCR
-and translation engines are pluggable for a later cross-platform build.
+This is the v1 prototype: Python + PySide6, Apple Vision OCR on macOS (RapidOCR
+elsewhere), and **offline on-device translation** (Argos Translate) by default —
+with the free **Google Translate** endpoint (no API key) available as a network
+option. It is architected so the OCR and translation engines are pluggable.
 
 ---
 
@@ -46,12 +47,31 @@ You'll be prompted on first use; you may need to quit and relaunch after grantin
 > **RapidOCR** engine (auto-installed from `requirements.txt`) instead of Apple
 > Vision, and **mss** for capture. Expect rough edges; bug reports welcome.
 
-**Windows** (PowerShell or cmd, Python 3.12+):
+**Windows** — just double-click **`run.bat`** in Explorer. The first run sets
+everything up automatically (no manual Python install needed):
+
+- **`setup.bat`** — installer, run once. Finds Python 3, or installs Python 3.12
+  via `winget` if it's missing (per-user, no admin), then creates the virtual
+  environment and installs deps (incl. rapidocr). Double-clickable. The venv is
+  created at `%LOCALAPPDATA%\ai-screen-translator\venv` (a short path, on purpose:
+  PySide6's long internal paths overflow Windows' 260-char limit inside a deep
+  project folder).
+- **`run.bat`** — launcher, double-click each time. Starts the tray app and keeps
+  a console window open showing the live log. If setup hasn't run yet, it runs it
+  first, so double-clicking `run.bat` alone is enough.
+- **`run-debug.bat`** — same as `run.bat` but with verbose (`ST_LOG=debug`) logging.
+- **`run-silent.vbs`** — starts the app with **no console window** (everyday use);
+  the log still goes to `%APPDATA%\ai-screen-translator\app.log`. Run setup once first.
+
+From a terminal it's the same:
 
 ```bat
 cd ai-screen-translator
-run.bat            REM creates .venv, installs deps (incl. rapidocr), launches the tray app
+run.bat            REM first run installs Python (if needed) + deps, then launches
 ```
+
+For verbose logs, set `ST_LOG=debug` before launching (PowerShell:
+`$env:ST_LOG="debug"; .\run.bat`).
 
 **Linux** (X11 session, Python 3.12+):
 
@@ -150,13 +170,15 @@ On macOS it needs Accessibility permission, and the brightness/media keys
 (F1/F2/F7–F12 in their default mode) can't be intercepted — pick a plain function
 key, or enable “Use F1, F2 as standard function keys”.
 
-**Translation engines:** the default is the free Google endpoint (no key, needs
-internet). Or pick **offline** (Argos Translate) for on-device, no-network
-translation. For offline, click **Settings → Offline
-model → Download model for the selected languages** — it installs Argos Translate
-(if missing) and downloads the language pack for your source/target (pivoting
-through English when there's no direct pack). Offline can't auto-detect, so set an
-explicit source.
+**Translation engines:** the default is **offline** (Argos Translate) — fully
+on-device, no network. The setup scripts (`setup.bat` / `run.sh`) install it and
+download the language pack for the default `source→target` (en→ru) automatically,
+so it works out of the box; this is the ~1 GB the install pulls (ctranslate2 +
+spacy/stanza/torch). Offline can't auto-detect, so set an explicit source. To use a
+different language pair offline, click **Settings → Offline model → Download model
+for the selected languages** (pivots through English when there's no direct pack).
+Or switch to the free **Google** endpoint (no key, needs internet) in Settings —
+and comment out `argostranslate` in `requirements.txt` to skip the heavy install.
 
 ---
 

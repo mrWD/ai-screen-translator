@@ -113,11 +113,15 @@ so don't call `capture.grab` in headless checks; it only works inside the runnin
 app (or a real GUI session).
 
 **Translation routing (`translate.py`).** Mirrors the OCR plugin: backends behind
-`make_translator(engine, ...)` — `GoogleFreeBackend` (free, default, no key) and
-`ArgosBackend` (offline, optional dep). The base class centralizes the empty-text
-guard, the (source,target,text) cache, and the `TranslateError` contract. An
-**explicit** engine is built as-is so its failure surfaces; `auto` prefers Google,
-then offline. Like OCR, the backend is built lazily on the **UI thread**
+`make_translator(engine, ...)` — `GoogleFreeBackend` (free, no key, needs network)
+and `ArgosBackend` (offline, on-device). **Offline is now the default engine**
+(`Config.translate_engine="offline"`), so `argostranslate` is a hard requirement
+(`requirements.txt`, not optional anymore) and the setup scripts download the en→ru
+pack at install (`screen_translator.download_offline`). The base class centralizes
+the empty-text guard, the (source,target,text) cache, and the `TranslateError`
+contract. An **explicit** engine is built as-is so its failure surfaces; `auto`
+(only used by the legacy `translate()` helper, not the app) prefers Google, then
+offline. Like OCR, the backend is built lazily on the **UI thread**
 (`_get_translator`), reset to `None` on engine/model-dir change, and the
 **instance is passed into the worker job** — never call a module global from the
 `QRunnable`. Unlike OCR it is **not** reset on a source change: its cache is keyed

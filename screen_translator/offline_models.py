@@ -112,4 +112,16 @@ def download_model(
         path = by_pair[pair].download()
         log(f"Installing {pair[0]}→{pair[1]}…")
         pkg.install_from_path(path)
+
+    # Verify every wanted pack actually landed. A pivot pair (src→en, en→tgt) is
+    # installed in two steps; a mid-way failure would otherwise leave the route
+    # half-built and translation silently broken. Raising here keeps the caller's
+    # non-zero exit / error reporting honest.
+    have = {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}
+    missing = [p for p in wanted if p not in have]
+    if missing:
+        raise RuntimeError(
+            "Offline model install incomplete: "
+            + ", ".join(f"{a}→{b}" for a, b in missing)
+        )
     log("✓ Offline model ready.")

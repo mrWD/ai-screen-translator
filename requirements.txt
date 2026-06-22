@@ -15,6 +15,10 @@ pyobjc-framework-Cocoa>=10.0 ; sys_platform == "darwin"
 # it's optional — install it by hand only if you want a fallback engine for Vision.
 rapidocr-onnxruntime>=1.3 ; sys_platform != "darwin"
 
-# Offline translation (Argos Translate; installed on demand by Settings -> Offline
-# model -> Download). Uncomment to preinstall the "offline" engine:
-# argostranslate>=1.9
+# Offline translation engine (Argos Translate) — this is the DEFAULT translate
+# engine, so it's installed for everyone. Heavy: it pulls ctranslate2 + spacy +
+# stanza + torch (~1 GB), but enables fully on-device, no-network translation.
+# setup.bat (Windows) / run.sh also download the language pack for the chosen
+# source→target after install. To go network-only (Google) and skip this weight,
+# comment this line out and set translate_engine="google" in Settings.
+argostranslate>=1.9
