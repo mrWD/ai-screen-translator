@@ -48,8 +48,7 @@ class Config:
     target: str = "ru"
     ocr_engine: str = "auto"  # "auto" | "vision" | "rapidocr"
     ocr_fast: bool = True     # Apple Vision "fast" recognition (≈2x faster); off = "accurate"
-    translate_engine: str = "google"  # "google" | "deepl" | "offline"
-    deepl_api_key: str = ""           # required for the "deepl" engine
+    translate_engine: str = "google"  # "google" | "offline"
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default
     region: Region | None = None
     hotkey_translate: str = f"{_MOD}+<shift>+t"
@@ -84,6 +83,8 @@ class Config:
         # Drop unknown keys so older/newer config files don't crash construction.
         known = {f for f in cls.__dataclass_fields__ if f != "region"}
         cfg = cls(**{k: v for k, v in data.items() if k in known})
+        if cfg.translate_engine not in ("google", "offline"):
+            cfg.translate_engine = "google"  # e.g. a stale "deepl" from an old config
         if region:
             region_fields = Region.__dataclass_fields__
             cfg.region = Region(**{k: v for k, v in region.items() if k in region_fields})

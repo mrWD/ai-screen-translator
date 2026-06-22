@@ -20,7 +20,7 @@ Original use case (the bar to meet):
 5. User can see ORIGINAL + TRANSLATION and SELECT/COPY the text.
 
 All five are implemented. Translation is pluggable — free Google (no API key) is
-the default, with optional DeepL (API key) and offline Argos backends.
+the default, with an optional offline Argos backend.
 
 ---
 
@@ -76,7 +76,7 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   (full Retina res). Else mss. Logical-coords in; returns RGB PIL image. `is_black()`.
 - `ocr.py` — pluggable OCR. `VisionOCR` (Apple Vision via ocrmac) + `RapidOCRBackend`.
   `recognize()` → text; `recognize_blocks()` → `Block(text,x,y,w,h)` in image pixels.
-- `translate.py` — pluggable: `GoogleFreeBackend` / `DeepLBackend` / `ArgosBackend`
+- `translate.py` — pluggable: `GoogleFreeBackend` / `ArgosBackend`
   behind `make_translator`, mirroring `ocr.make_ocr`. Per-backend (source,target,text)
   cache + uniform `TranslateError`. Module-level `translate()` kept for the smoke test.
 - `region_selector.py` — drag-to-select region (frameless top-most overlay).
@@ -148,13 +148,12 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   `(rect, orig, translated, fill_rgb, text_rgb)`; in-place layout anchors on the
   original (no grow/de-overlap) so the erase aligns.
 - **Translation backend mirrors OCR**: built lazily on the UI thread
-  (`_get_translator`), reset to None on engine/key change, and the instance is passed
-  into the worker job — never call a module global from the worker. NOT reset on a
-  source change (its cache is keyed by source, so one instance serves all).
-  `make_translator` surfaces a clear error for explicit `deepl` with no key (no silent
-  fallback to Google). DeepL targets map Chinese to ZH-HANS/ZH-HANT (bare ZH target =
-  Simplified). On macOS, `capture._grab_quartz` subtracts the chosen display's bounds
-  origin because `CGDisplayCreateImageForRect`'s rect is display-LOCAL, not global.
+  (`_get_translator`), reset to None on engine/model-dir change, and the instance is
+  passed into the worker job — never call a module global from the worker. NOT reset on a
+  source change (its cache is keyed by source, so one instance serves all). Engines:
+  free Google (default) and offline Argos. On macOS, `capture._grab_quartz` subtracts
+  the chosen display's bounds origin because `CGDisplayCreateImageForRect`'s rect is
+  display-LOCAL, not global.
 
 ---
 
@@ -169,13 +168,12 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   deferred over.
 - **In-place text replacement** — opt-in (`overlay_inplace`). Confirm the erase aligns
   and looks right over a real game (flat fill won't match textured/gradient bgs).
-- **Pluggable translation** — DeepL (needs a key) and offline Argos (needs an
-  Argos pack + an explicit source). **Settings → Offline model → Download**
-  (`offline_models.download_model`, run on a `QRunnable` so the modal dialog stays
-  responsive) pip-installs argostranslate if missing and fetches the pack — direct
-  if Argos has one, else pivoting through English (`offline_models.plan_packages`,
-  unit-tested in `tests/test_offline_models.py`). Confirm a real DeepL key and a
-  freshly-downloaded Argos pack actually translate.
+- **Offline translation** — Argos (needs an Argos pack + an explicit source).
+  **Settings → Offline model → Download** (`offline_models.download_model`, run on a
+  `QRunnable` so the modal dialog stays responsive) pip-installs argostranslate if
+  missing and fetches the pack — direct if Argos has one, else pivoting through
+  English (`offline_models.plan_packages`, unit-tested in
+  `tests/test_offline_models.py`). Confirm a freshly-downloaded Argos pack translates.
 
   **Gotcha — Argos must run in a subprocess.** argostranslate pulls in
   stanza → PyTorch, and torch SEGFAULTs when its GIL is acquired from a Qt

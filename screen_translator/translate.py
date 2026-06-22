@@ -1,12 +1,11 @@
 """Pluggable translation.
 
 - GoogleFree (deep-translator): free, no API key, the default. Rate-limited.
-- DeepL: higher quality, needs an API key (quota-metered).
 - Offline (Argos Translate): on-device, no network, downloads language packs.
 
 `make_translator(engine, ...)` returns a ready backend, mirroring ocr.make_ocr.
 Every backend caches by (source, target, text) — game/menu text repeats a lot and
-the endpoints are rate-limited / quota-metered, so we never re-translate a string.
+the endpoints are rate-limited, so we never re-translate a string.
 
 The module-level `translate()` / `TranslateError` are kept for tools/smoke_test.py
 and any caller that just wants the default free engine.
@@ -75,41 +74,6 @@ class GoogleFreeBackend(TranslateBackend):
 
     def _translate(self, text: str, source: str, target: str) -> str:
         return GoogleTranslator(source=source, target=target).translate(text)
-
-
-# App (Google) codes -> DeepL codes. DeepL source is the base language; some
-# targets require a regional variant (EN-US, PT-BR). Unmapped codes fall back to
-# an uppercased guess and DeepL surfaces a clear error if it's unsupported.
-_DEEPL_SOURCE = {
-    "en": "EN", "ja": "JA", "zh-CN": "ZH", "zh-TW": "ZH", "ko": "KO", "ru": "RU",
-    "uk": "UK", "de": "DE", "fr": "FR", "es": "ES", "it": "IT", "pt": "PT",
-    "pl": "PL", "tr": "TR", "ar": "AR",
-}
-# Targets need the explicit regional/script variant; bare "ZH" target is a
-# deprecated alias that always yields Simplified, so map the Chinese variants too.
-_DEEPL_TARGET = {
-    **_DEEPL_SOURCE,
-    "en": "EN-US", "pt": "PT-BR", "zh-CN": "ZH-HANS", "zh-TW": "ZH-HANT",
-}
-
-
-class DeepLBackend(TranslateBackend):
-    name = "deepl"
-
-    def __init__(self, api_key: str) -> None:
-        super().__init__()
-        if not api_key:
-            raise RuntimeError("DeepL needs an API key — set it in Settings.")
-        try:
-            import deepl
-        except ImportError as exc:
-            raise RuntimeError("DeepL not installed — `pip install deepl`.") from exc
-        self._client = deepl.Translator(api_key)
-
-    def _translate(self, text: str, source: str, target: str) -> str:
-        src = None if source == "auto" else _DEEPL_SOURCE.get(source, source.split("-")[0].upper())
-        tgt = _DEEPL_TARGET.get(target, target.split("-")[0].upper())
-        return self._client.translate_text(text, source_lang=src, target_lang=tgt).text
 
 
 class ArgosBackend(TranslateBackend):
@@ -244,39 +208,30 @@ class ArgosBackend(TranslateBackend):
         return out
 
 
-def _build(name: str, *, deepl_api_key: str = "", offline_model_dir: str = "") -> TranslateBackend:
+def _build(name: str, *, offline_model_dir: str = "") -> TranslateBackend:
     if name == "google":
         return GoogleFreeBackend()
-    if name == "deepl":
-        return DeepLBackend(deepl_api_key)
     if name == "offline":
         return ArgosBackend(offline_model_dir)
     raise RuntimeError(f"Unknown translate engine: {name}")
 
 
-def make_translator(
-    engine: str,
-    *,
-    deepl_api_key: str = "",
-    offline_model_dir: str = "",
-) -> TranslateBackend:
+def make_translator(engine: str, *, offline_model_dir: str = "") -> TranslateBackend:
     """Pick a backend. An explicit engine is built as-is so its failure surfaces a
-    clear error (e.g. 'deepl' with no key). 'auto' prefers the free Google engine,
-    then DeepL (only if a key is set), then offline. Source is not needed here — the
-    backend's cache is keyed by source, so one instance serves every source."""
+    clear error. 'auto' prefers the free Google engine, then offline. Source is not
+    needed here — the backend's cache is keyed by source, so one instance serves all."""
     if engine and engine != "auto":
-        return _build(engine, deepl_api_key=deepl_api_key, offline_model_dir=offline_model_dir)
+        return _build(engine, offline_model_dir=offline_model_dir)
 
-    order = ["google"] + (["deepl"] if deepl_api_key else []) + ["offline"]
     errors = []
-    for name in order:
+    for name in ("google", "offline"):
         try:
-            return _build(name, deepl_api_key=deepl_api_key, offline_model_dir=offline_model_dir)
+            return _build(name, offline_model_dir=offline_model_dir)
         except Exception as exc:  # pragma: no cover - depends on installed deps
             errors.append(f"{name}: {exc}")
     raise RuntimeError(
         "No translation backend available. Tried: " + "; ".join(errors)
-        + "  (set a DeepL API key, or install argostranslate for offline)"
+        + "  (install argostranslate for offline)"
     )
 
 

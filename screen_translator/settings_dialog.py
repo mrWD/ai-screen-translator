@@ -71,15 +71,10 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("", self._ocr_fast)
 
         self._translate_engine = QtWidgets.QComboBox()
-        for engine in ("google", "deepl", "offline"):
+        for engine in ("google", "offline"):
             self._translate_engine.addItem(engine, engine)
         self._select_code(self._translate_engine, cfg.translate_engine)
         form.addRow("Translation engine", self._translate_engine)
-
-        self._deepl_key = QtWidgets.QLineEdit(cfg.deepl_api_key)
-        self._deepl_key.setEchoMode(QtWidgets.QLineEdit.Password)
-        self._deepl_key.setPlaceholderText("DeepL API key (only for the deepl engine)")
-        form.addRow("DeepL API key", self._deepl_key)
 
         # One-click setup for the "offline" engine: installs argostranslate (if
         # needed) and downloads the language pack for the languages selected above.
@@ -205,7 +200,6 @@ class SettingsDialog(QtWidgets.QDialog):
             ocr_engine=self._engine.currentData() or self._cfg.ocr_engine,
             ocr_fast=self._ocr_fast.isChecked(),
             translate_engine=self._translate_engine.currentData() or self._cfg.translate_engine,
-            deepl_api_key=self._deepl_key.text().strip(),
             live_interval_ms=self._interval.value(),
             overlay_font_pt=self._font.value(),
             overlay_opacity=round(self._opacity.value(), 2),

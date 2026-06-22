@@ -22,7 +22,7 @@ from . import pipeline
 
 _log = logging.getLogger(__name__)
 
-# Full-screen translates many blocks; the free/DeepL endpoints are network-bound,
+# Full-screen translates many blocks; the free Google endpoint is network-bound,
 # so fan the requests out instead of paying N round-trips back to back. Capped so
 # we never hammer a rate-limited endpoint, and dropped to 1 for backends that
 # aren't safe to call concurrently (see TranslateBackend.parallel_safe).

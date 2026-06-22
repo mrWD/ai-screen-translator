@@ -133,7 +133,6 @@ class App:
         if self._translator is None:
             self._translator = make_translator(
                 self.cfg.translate_engine,
-                deepl_api_key=self.cfg.deepl_api_key,
                 offline_model_dir=self.cfg.offline_model_dir,
             )
         return self._translator
@@ -651,7 +650,6 @@ class App:
             self._ocr = None
         translator_changed = (
             new.translate_engine != old.translate_engine
-            or new.deepl_api_key != old.deepl_api_key
             or new.offline_model_dir != old.offline_model_dir
         )
         if translator_changed:

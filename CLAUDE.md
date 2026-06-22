@@ -106,17 +106,16 @@ so don't call `capture.grab` in headless checks; it only works inside the runnin
 app (or a real GUI session).
 
 **Translation routing (`translate.py`).** Mirrors the OCR plugin: backends behind
-`make_translator(engine, ...)` — `GoogleFreeBackend` (free, default, no key),
-`DeepLBackend` (needs `deepl_api_key`), `ArgosBackend` (offline, optional dep).
-The base class centralizes the empty-text guard, the (source,target,text) cache,
-and the `TranslateError` contract. An **explicit** engine is built as-is so its
-failure surfaces (e.g. `deepl` with no key errors instead of silently using
-Google); `auto` skips DeepL when there's no key. Like OCR, the backend is built
-lazily on the **UI thread** (`_get_translator`), reset to `None` on engine/key
-change, and the **instance is passed into the worker job** — never call a module
-global from the `QRunnable`. Unlike OCR it is **not** reset on a source change:
-its cache is keyed by `(source, target, text)`, so one instance serves every
-source. The module-level `translate()` is kept only for `smoke_test.py`.
+`make_translator(engine, ...)` — `GoogleFreeBackend` (free, default, no key) and
+`ArgosBackend` (offline, optional dep). The base class centralizes the empty-text
+guard, the (source,target,text) cache, and the `TranslateError` contract. An
+**explicit** engine is built as-is so its failure surfaces; `auto` prefers Google,
+then offline. Like OCR, the backend is built lazily on the **UI thread**
+(`_get_translator`), reset to `None` on engine/model-dir change, and the
+**instance is passed into the worker job** — never call a module global from the
+`QRunnable`. Unlike OCR it is **not** reset on a source change: its cache is keyed
+by `(source, target, text)`, so one instance serves every source. The module-level
+`translate()` is kept only for `smoke_test.py`.
 **Argos runs in a subprocess (`argos_proc.py`), not in-process.** argostranslate
 pulls in stanza → PyTorch, and torch segfaults when its GIL is acquired from a Qt
 `QThreadPool` worker thread (`take_gil` ← `gil_scoped_acquire`) — and translation
