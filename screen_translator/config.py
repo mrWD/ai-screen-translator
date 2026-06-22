@@ -52,13 +52,16 @@ class Config:
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default
     region: Region | None = None
     hotkey_translate: str = f"{_MOD}+<shift>+t"
-    hotkey_fullscreen: str = f"{_MOD}+<shift>+f"
+    # Full-screen translation is hold-to-show only (see hotkey_hold) — there is no
+    # persistent full-screen hotkey. (Old configs' hotkey_fullscreen is ignored.)
     hotkey_reselect: str = f"{_MOD}+<shift>+r"
     hotkey_hide: str = f"{_MOD}+<shift>+h"
     hotkey_live: str = f"{_MOD}+<shift>+l"
-    hotkey_hold: str = "<alt_r>"  # hold to show full-screen translation, release to hide.
-    # Right Option: does nothing on its own in macOS and isn't a reserved shortcut,
-    # unlike the F-keys (F7/F8/F9 are media ⏮/⏯/⏭ by default and launch Music).
+    hotkey_hold: str = "<f6>"  # HOLD to show the full-screen translation; release hides it.
+    # A single, modifier-free key works best for hold. Pair with suppress_hotkeys so
+    # the key's own action (F6 = brightness/etc.) is swallowed while you hold it.
+    suppress_hotkeys: bool = False  # swallow a single-key hotkey's normal action
+    # (e.g. F6's default). Only single, modifier-free keys; macOS needs Accessibility.
     live_interval_ms: int = 800
     overlay_font_pt: int = 18
     overlay_opacity: float = 0.85
@@ -66,7 +69,9 @@ class Config:
     save_history: bool = True
     save_screenshots: bool = True
     history_keep_sessions: int = 20
-    accessory_mode: bool = False  # macOS: menu-bar-only (no Dock icon); needs relaunch
+    accessory_mode: bool = True  # macOS: menu-bar-only (no Dock icon); needs relaunch.
+    # Default on: an accessory app's overlay floats over other apps' native-fullscreen
+    # Spaces (GeForce Now games) without switching Space — a Regular (Dock) app can't.
 
     @classmethod
     def load(cls) -> "Config":

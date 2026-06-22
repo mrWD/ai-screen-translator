@@ -137,9 +137,11 @@ class ScreenJob(QRunnable):
         if not texts:
             return []
         parallel_safe = getattr(self._translator, "parallel_safe", True)
-        workers = min(_MAX_TRANSLATE_WORKERS, len(texts)) if parallel_safe else 1
-        if workers <= 1:
-            return [self._translator.translate(t, self._source, self._target) for t in texts]
+        if not parallel_safe:
+            # Can't fan out (e.g. Argos) — send the whole batch in one shot so we pay
+            # the per-call overhead (a subprocess round-trip) once, not N times.
+            return self._translator.translate_batch(texts, self._source, self._target)
+        workers = min(_MAX_TRANSLATE_WORKERS, len(texts))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(
                 lambda t: self._translator.translate(t, self._source, self._target), texts

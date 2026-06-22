@@ -48,7 +48,10 @@ You'll be prompted on first use; you may need to quit and relaunch after grantin
    you to **drag-select the region** where the game text appears (e.g. the
    subtitle/dialogue box).
 4. After that, each press of `Cmd+Shift+T` re-captures that same region and shows
-   the translation in a panel just below it.
+   the translation in a panel just below it. A **⏳ Translating…** placeholder
+   appears instantly so you know it's working; it's replaced by the result when
+   OCR + translation finish (a network/first-offline call takes a moment). The
+   offline engine is pre-warmed in the background so its first translate is quick.
 
 **Live mode** (`Cmd+Shift+L`, or the menu): instead of pressing the hotkey for
 every line, the app watches the selected region and re-translates automatically
@@ -77,17 +80,33 @@ unlike the F-keys — F7/F8/F9 are media ⏮/⏯/⏭ and would launch Music.)
 | Hotkey | Action |
 |---|---|
 | `Cmd+Shift+T` | Capture the saved region once, translate, show panel |
-| `Cmd+Shift+F` | Translate the whole screen, in place |
-| Right Option `⌥` (hold) | Show whole-screen translation while held, hide on release |
+| **`F6` (hold)** | Show the whole-screen translation **only while held** — release to hide |
 | `Cmd+Shift+L` | Toggle live (auto-translate) mode on the region |
 | `Cmd+Shift+R` | Re-select the region |
 | `Cmd+Shift+H` | Hide overlays |
 
+Full-screen translation is **hold-to-show only**: hold the full-screen key
+(reassignable under **Full screen: HOLD to show** in Settings) and the translation
+stays only while you hold it — release to hide. There is no persistent full-screen
+hotkey. The menu item **Translator → Translate full screen** still does a one-off
+capture (it stays until you hide it) for when you can't hold a key.
+
 **Changing hotkeys:** open **Settings**, click a hotkey field, and press the
-key(s) you want — single keys work, as do chords like `Cmd+Shift+T`. Note that on
-macOS the F-keys are media/brightness keys by default (so they trigger those
-actions unless you enable *System Settings → Keyboard → "Use F1, F2, etc. keys as
-standard function keys"*).
+key(s) you want — single keys (e.g. `F6`) work, as do chords like `Cmd+Shift+T`.
+Press `⌫` (Backspace) while recording to clear a field (disables that hotkey).
+
+**Global hotkeys need Accessibility** on macOS: the app prompts on first launch.
+If hotkeys do nothing, enable the app (or your terminal) in *System Settings →
+Privacy & Security → Accessibility* and **relaunch** — a tap granted while the app
+is already running won't receive events until restart.
+
+**Logs / troubleshooting:** the app writes a log to
+`~/Library/Application Support/ai-screen-translator/app.log` (also printed to the
+terminal). It records every hotkey, capture, translation and overlay action — open
+it to see what happened, or run with `ST_LOG=debug` for verbose output. Note that the F-keys are
+media/brightness keys by default; enable *System Settings → Keyboard → "Use F1,
+F2, etc. keys as standard function keys"*, or turn on **Suppress** in Settings so
+a single-key hotkey runs the translation instead of its default action.
 
 ## Saving & reviewing (after the game)
 
@@ -113,10 +132,25 @@ toggle, and all hotkeys — applied live (the Dock-icon toggle needs a relaunch)
 All of it also persists to the config file. On Windows/Linux the default modifier
 is `Ctrl`.
 
+On macOS the app runs **menu-bar-only (accessory) by default** — this is what lets
+the full-screen translation float *over* a GeForce Now game's fullscreen Space; a
+normal Dock app would switch you back to the Desktop Space instead. You can re-enable
+the Dock icon under Settings, at the cost of that float-over-fullscreen behaviour.
+
+**Suppress** (Settings) makes a single-key hotkey swallow its normal action — so
+binding e.g. F1 runs the translation *instead of* opening Help. Only single,
+modifier-free keys are affected (chords like `Cmd+Shift+T` always pass through).
+On macOS it needs Accessibility permission, and the brightness/media keys
+(F1/F2/F7–F12 in their default mode) can't be intercepted — pick a plain function
+key, or enable “Use F1, F2 as standard function keys”.
+
 **Translation engines:** the default is the free Google endpoint (no key). Pick
 **deepl** (paste an API key) for higher quality, or **offline** (Argos Translate)
-for on-device, no-network translation — install the optional dependency first
-(see `requirements.txt`). Offline can't auto-detect, so set an explicit source.
+for on-device, no-network translation. For offline, click **Settings → Offline
+model → Download model for the selected languages** — it installs Argos Translate
+(if missing) and downloads the language pack for your source/target (pivoting
+through English when there's no direct pack). Offline can't auto-detect, so set an
+explicit source.
 
 ---
 
@@ -147,10 +181,11 @@ Settings persist to:
 
 Keys: `source`, `target`, `ocr_engine` (`auto`/`vision`/`rapidocr`),
 `translate_engine` (`google`/`deepl`/`offline`), `deepl_api_key`,
-`offline_model_dir`, `region`, `hotkey_translate`, `hotkey_fullscreen`,
+`offline_model_dir`, `region`, `hotkey_translate`,
 `hotkey_hold`, `hotkey_reselect`, `hotkey_hide`, `hotkey_live`,
-`live_interval_ms`, `overlay_font_pt`, `overlay_opacity`, `overlay_inplace`,
-`save_history`, `save_screenshots`, `history_keep_sessions`, `accessory_mode`.
+`suppress_hotkeys`, `live_interval_ms`, `overlay_font_pt`, `overlay_opacity`,
+`overlay_inplace`, `save_history`, `save_screenshots`, `history_keep_sessions`,
+`accessory_mode`.
 
 ---
 
@@ -168,6 +203,8 @@ screen_translator/
   changes.py         # frozen-frame detection (live-mode OCR skip)
   ocr.py             # pluggable OCR: Apple Vision / RapidOCR
   translate.py       # pluggable translation: Google free / DeepL / offline Argos + cache
+  offline_models.py  # one-click Argos install + language-pack download (Settings button)
+  argos_proc.py      # offline-translation subprocess (keeps torch off the Qt worker thread)
   region_selector.py # drag-to-select region UI
   overlay.py         # region-mode translucent click-through panel, anchored beside the region
   screen_overlay.py  # full-screen in-place overlay (boxes over text, or erase+replace)
@@ -175,7 +212,7 @@ screen_translator/
   hotkeys.py         # global hotkeys (pynput) bridged to Qt
   macos.py           # NSWindow tweaks (float over fullscreen) + activation policy
   languages.py       # language list for the UI
-tests/               # unit tests for pipeline.py + gating.py (stdlib unittest)
+tests/               # unit tests for pipeline.py + gating.py + offline_models.py (stdlib unittest)
 tools/smoke_test.py  # headless OCR+translate verification
 ```
 

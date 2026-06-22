@@ -118,12 +118,20 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   selectable — selection/copy is delivered via the history `index.html` (and "Copy
   last result"). This is intentional, not a bug.
 - **macOS NSWindow collectionBehavior** (`macos.py`) lets overlays float over
-  fullscreen Spaces — needed for GeForce Now in macOS fullscreen.
+  fullscreen Spaces — needed for GeForce Now in macOS fullscreen. The fix that made
+  it actually appear over another app's fullscreen Space (not just on Desktop) was
+  `setHidesOnDeactivate_(False)`: `Qt.Tool` = NSPanel utility panel, which hides when
+  another app is active (the GFN game owns the foreground there). Re-applied on every
+  show. **Verify live** with a GFN game in a fullscreen Space: hold F6, the
+  translation must appear over the game, not only on the Desktop Space.
 - **GeForce Now works** (it's a composited window). **DRM video = black frame** by
   design (unfixable). **True exclusive-fullscreen games** bypass the overlay → tell
   the user to switch to Borderless. The app detects all-black and messages it.
-- **Accessory mode** (`accessory_mode`, opt-in, default off) sets
+- **Accessory mode** (`accessory_mode`, **default ON**) sets
   `NSApplicationActivationPolicyAccessory` (no Dock icon / app menu — tray only).
+  Default on because a **Regular (Dock) app switches Spaces** when it orders a window
+  front, so the full-screen overlay would appear on the Desktop Space instead of over
+  a GeForce Now game's fullscreen Space — an accessory app floats over it in place.
   Accessory apps don't get keyboard focus for a frameless overlay, so
   `_selector_focus_acquire/release` briefly restore Regular policy + `activate_app()`
   around region selection (restored on BOTH the selected and cancelled paths).
@@ -161,13 +169,41 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   deferred over.
 - **In-place text replacement** — opt-in (`overlay_inplace`). Confirm the erase aligns
   and looks right over a real game (flat fill won't match textured/gradient bgs).
-- **Pluggable translation** — DeepL (needs a key) and offline Argos (needs
-  `pip install argostranslate` + an explicit source). Confirm a real DeepL key and an
-  installed Argos pack actually translate.
+- **Pluggable translation** — DeepL (needs a key) and offline Argos (needs an
+  Argos pack + an explicit source). **Settings → Offline model → Download**
+  (`offline_models.download_model`, run on a `QRunnable` so the modal dialog stays
+  responsive) pip-installs argostranslate if missing and fetches the pack — direct
+  if Argos has one, else pivoting through English (`offline_models.plan_packages`,
+  unit-tested in `tests/test_offline_models.py`). Confirm a real DeepL key and a
+  freshly-downloaded Argos pack actually translate.
+
+  **Gotcha — Argos must run in a subprocess.** argostranslate pulls in
+  stanza → PyTorch, and torch SEGFAULTs when its GIL is acquired from a Qt
+  `QThreadPool` worker thread (`take_gil` ← `gil_scoped_acquire` in
+  `libtorch_python`, while stanza inits a torch model). The job layer always runs
+  translation off the UI thread, so calling argos in-process is guaranteed to
+  crash. `ArgosBackend` therefore never imports argostranslate; it spawns
+  `python -m screen_translator.argos_proc` and exchanges newline-delimited JSON
+  (one request/response per line) over stdin/stdout. torch lives on the child's
+  main thread, our worker thread only does blocking pipe I/O. The child is
+  lazy-spawned on first translate, persists across calls, and exits on stdin EOF
+  when the app quits. **Do not "optimize" this back to an in-process call.**
 
 **Still open:**
 - **Verify Right Option (`<alt_r>`) hold + hotkey recording on the real machine** — the
   two-listener crash fix still needs a live confirmation.
+- **Verify hotkey suppression (`suppress_hotkeys`).** macOS: needs Accessibility
+  trust (the active event tap) — confirm a plain function key (e.g. F6, or F1 with
+  "standard function keys" on) both translates AND no longer triggers its default;
+  confirm the tap isn't disabled by timeout under load. Windows is **untested** —
+  the `win32_event_filter` dispatch path (`hotkeys.py`) needs a real run. macOS
+  F1/F2/media keys can't be caught (system events, not key events) — expected.
+- **macOS 26 TSM/keyboard-layout crash (FIXED, verify live).** Once Accessibility
+  was granted and keys reached pynput, the app SIGTRAP'd: pynput resolves the
+  keyboard layout via Carbon TSM APIs on its listener thread, and macOS 26 asserts
+  those are main-thread-only. `hotkeys._patch_darwin_keycode_context()` pre-resolves
+  the layout on the main thread and caches it for the listener. Confirm hotkeys now
+  fire on the real machine without the "Python quit unexpectedly" SIGTRAP.
 - Windows/Linux native capture backends (currently mss fallback there).
 - LLM / context-aware translation tiers.
 - Package as a signed `.app` (so permissions stick to the app, not Terminal).

@@ -31,7 +31,6 @@ class Overlay(QtWidgets.QWidget):
         self._opacity = max(0.0, min(1.0, opacity))
         self._font_pt = font_pt
         self._radius = 10
-        self._applied_wid = None  # NSWindow tweak is re-applied if winId changes
 
         self._label = QtWidgets.QLabel(self)
         self._label.setWordWrap(True)
@@ -40,6 +39,9 @@ class Overlay(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
         self._restyle()
+        # Realize the NSWindow now and mark it CanJoinAllSpaces, so the first show()
+        # floats over the current Space instead of switching to our home Space.
+        self._apply_macos_behavior()
 
     # ---- styling ----
     def _restyle(self) -> None:
@@ -72,10 +74,12 @@ class Overlay(QtWidgets.QWidget):
         self._label.setFixedWidth(max(220, region.width()))
         self.adjustSize()
         self.move(self._anchor(region))
+        # Apply CanJoinAllSpaces BEFORE show() so showing the panel doesn't switch
+        # macOS to our home Space (winId() realizes the NSWindow without showing it).
+        # Re-assert after show too, since Qt's show-time setup can drop the tweak.
+        self._apply_macos_behavior()
         self.show()
         self.raise_()
-        # winId() only yields a valid NSView once the native window exists,
-        # i.e. after show() — so apply the macOS tweak here, not before.
         self._apply_macos_behavior()
 
     def _anchor(self, region: QRect) -> QPoint:
@@ -104,14 +108,14 @@ class Overlay(QtWidgets.QWidget):
         if QtGui.QGuiApplication.platformName() != "cocoa":
             return
         wid = int(self.winId())
-        # Re-apply if the native window was recreated (winId changed) across a
-        # hide/show cycle — otherwise the panel loses its float-over-fullscreen.
-        if not wid or wid == self._applied_wid:
+        if not wid:
             return
+        # Re-apply on every show: Qt re-runs its window setup across hide/show
+        # cycles and can drop our collectionBehavior / hidesOnDeactivate tweaks,
+        # which would make the panel lose its float-over-fullscreen.
         try:
             from .macos import make_overlay_join_all_spaces
 
             make_overlay_join_all_spaces(wid)
-            self._applied_wid = wid
         except Exception:
             pass  # best-effort; overlay still works on non-fullscreen content

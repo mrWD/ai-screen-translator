@@ -33,7 +33,9 @@ class ScreenOverlay(QtWidgets.QWidget):
         self._inplace = False
         # box, text, font px, fill_rgb|None, text_rgb|None
         self._laid: list[tuple] = []
-        self._applied_wid = None
+        # Realize the NSWindow now and mark it CanJoinAllSpaces, so the very first
+        # show() draws over the current (game) Space instead of switching Spaces.
+        self._apply_macos_behavior()
 
     def set_opacity(self, opacity: float) -> None:
         self._opacity = max(0.0, min(1.0, opacity))
@@ -53,6 +55,11 @@ class ScreenOverlay(QtWidgets.QWidget):
         ]
         self._laid = self._layout(local, geom.width(), geom.height())
         self.update()
+        # Set CanJoinAllSpaces BEFORE showing: otherwise show() binds the window to
+        # our home (Desktop) Space and pulls that Space forward instead of drawing
+        # over the game's fullscreen Space. Re-assert after show too (Qt re-runs its
+        # own window setup at show time and can drop the tweak).
+        self._apply_macos_behavior()
         self.show()
         self.raise_()
         self._apply_macos_behavior()
@@ -136,12 +143,13 @@ class ScreenOverlay(QtWidgets.QWidget):
         if QtGui.QGuiApplication.platformName() != "cocoa":
             return
         wid = int(self.winId())
-        if not wid or wid == self._applied_wid:
+        if not wid:
             return
+        # Re-apply on every show: Qt re-runs its own window setup across hide/show
+        # cycles and can drop our collectionBehavior / hidesOnDeactivate tweaks.
         try:
             from .macos import make_overlay_join_all_spaces
 
             make_overlay_join_all_spaces(wid)
-            self._applied_wid = wid
         except Exception:
             pass

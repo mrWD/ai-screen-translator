@@ -62,6 +62,24 @@ and replays when free — only if still held. Always keep a Python ref to the ru
 wrapper tears down its C++ object. The same applies to menus/action-groups (see
 `_rebuild_menu`'s explicit ref lists).
 
+**Full-screen hold latency.** Offline (Argos) full-screen is slow — ~76 ms/block
+on-device, serial, so a text-heavy screen (50+ blocks) takes several seconds.
+`ScreenJob._translate_all` sends the whole batch to a `parallel_safe=False` backend
+in ONE call (`translate_batch`, one subprocess round-trip instead of N); network
+backends still fan out across `_MAX_TRANSLATE_WORKERS`. Because the result often
+arrives *after* the user lets go of the hold key, `_on_screen_done` no longer
+discards a released-hold result — it shows it and auto-hides after `_HOLD_LINGER_MS`
+(`_fs_linger`), cancelled by `_on_hold_end`/`_hide_overlays`/a new hold.
+
+**Perceived latency.** OCR + translate run off-thread, so on an *explicit* press
+the app shows a `⏳ Translating…` placeholder immediately (`_show_loading` /
+`_clear_loading`, tracked by `_loading`) — region in the panel, full-screen near
+the cursor — replaced in place by the result (`_on_job_done`) or hidden on
+failure/hold-release. Live ticks never show it. The offline (Argos) backend is
+**pre-warmed** in the background (`_warm_translator`, at launch and on engine
+switch) so its slow first call — subprocess spawn + model/torch load — happens
+before the user's first real translate, not during it.
+
 **Capture coordinate self-calibration — the load-bearing invariant.** Capture
 takes **logical (Qt) point** coordinates. On macOS, `capture.grab` uses Quartz
 (`CGDisplayCreateImageForRect`) returning **native Retina pixels** (~2×); other
@@ -90,6 +108,16 @@ change, and the **instance is passed into the worker job** — never call a modu
 global from the `QRunnable`. Unlike OCR it is **not** reset on a source change:
 its cache is keyed by `(source, target, text)`, so one instance serves every
 source. The module-level `translate()` is kept only for `smoke_test.py`.
+**Argos runs in a subprocess (`argos_proc.py`), not in-process.** argostranslate
+pulls in stanza → PyTorch, and torch segfaults when its GIL is acquired from a Qt
+`QThreadPool` worker thread (`take_gil` ← `gil_scoped_acquire`) — and translation
+*always* runs on a worker thread. So `ArgosBackend` never imports argostranslate;
+it spawns `python -m screen_translator.argos_proc` and talks newline-delimited
+JSON over stdin/stdout (lock-serialized; the child persists and exits on stdin
+EOF). Do not move this back in-process. The Settings button that installs
+argostranslate + the language pack lives in `offline_models.py` (`plan_packages`
+pivots through English when there's no direct pack; the download runs on a
+`QRunnable`).
 
 **OCR routing (`ocr.py`).** Pluggable backends behind `make_ocr(engine, source)`:
 `VisionOCR` (Apple Vision via `ocrmac`, macOS, default) and `RapidOCRBackend`
@@ -104,6 +132,44 @@ the source language or engine changes, forcing a rebuild.
 hotkeys (pynput `HotKey` objects) and the hold key. Two listeners segfault macOS
 (an `AXIsProcessTrusted` lazy-import race) — do not add a second. `hotkey_edit.py`
 records a Qt keypress and converts it to the pynput string format used in config.
+**Full-screen is hold-to-show only**: `hotkey_hold` (default `<f6>`) shows the
+full-screen overlay while held and hides on release (`_on_hold_start`/`_on_hold_end`).
+There is **no** persistent full-screen hotkey (`hotkey_fullscreen` was removed;
+`Config.load` drops the stale key from old config files). The menu "Translate full
+screen" still calls `translate_fullscreen(is_hold=False)` for a deliberate one-off
+persistent capture. A hotkey field can be cleared (Backspace in `hotkey_edit.py`);
+`start()` skips unparseable/empty specs.
+**Callbacks must never raise:** pynput's `_emitter` *stops the whole listener* on
+any unhandled exception in `on_press`/intercept (then no hotkey works), so every
+handler swallows its own errors. **Event-tap watchdog:** macOS disables a tap whose
+process was slow (`kCGEventTapDisabledByTimeout`) and pynput NEVER re-enables it
+(it calls `CGEventTapEnable` once at startup) — so after one heavy translate the
+hotkeys go dead. `_install_tap_capture_patch` stashes the tap on the listener and a
+`QTimer` (`_check_tap`, plus the disable-event path in `_darwin_intercept`)
+re-enables it. **Logging** (`log.py`, file at `<config dir>/app.log`, `ST_LOG=debug`
+for verbose) traces hotkey fires, hold up/down, gate transitions, capture, job
+results and the overlay float tweak — the main remote-diagnosis channel. **Accessibility:** the event tap only gets
+hardware key events when the process is trusted, and a tap created while the app
+runs won't receive events until relaunch — `App._check_accessibility()` prompts
+(`macos.accessibility_trusted(prompt=True)`) and notifies, so "hotkeys do nothing"
+is surfaced instead of silent.
+**macOS 26 TSM crash workaround:** pynput resolves the keyboard layout via Carbon
+TSM/TIS APIs inside `Listener._run` — on its background thread — and recent macOS
+hard-asserts those are main-thread-only (`dispatch_assert_queue` → SIGTRAP in
+`islGetInputSourceListWithAdditions`). `_patch_darwin_keycode_context()` resolves
+the layout once on the main thread (in `start()`) and monkeypatches
+`pynput.keyboard._darwin.keycode_context` to yield that cached value, so the
+listener thread only ever calls the thread-safe `UCKeyTranslate`. Keep this; the
+active event tap (suppression) reliably trips the crash without it.
+**Optional suppression** (`config.suppress_hotkeys`, default off) swallows a
+single-key hotkey's normal OS/app action (e.g. F1=Help) via the SAME listener's
+per-platform hooks — never a second listener. macOS `darwin_intercept`: pynput
+calls `on_press` first (sets `_suppress_current`), then the intercept returns
+`None` to drop the event (needs Accessibility; the active tap; F1/F2/media keys
+arrive as system events it can't catch). Windows `win32_event_filter`: runs
+*before* `on_press` and suppressing skips it, so the filter dispatches the action
+itself (off `data.vkCode`, with auto-repeat de-dup) then returns `False`. Only
+single, modifier-free keys qualify (`_build_suppress_tables`); chords pass through.
 
 **Live mode (`app.py` + `changes.py`).** A `QTimer` re-captures the saved region;
 `changes.signature`/`changes.changed` skip OCR on frozen frames, and `Job`'s dedup
@@ -137,16 +203,34 @@ log once.)
 ## Platform notes that constrain design
 
 - **GeForce Now works** (composited window); overlays float over native-fullscreen
-  Spaces via NSWindow `collectionBehavior` tweaks in `macos.py`.
+  Spaces via `macos.make_overlay_join_all_spaces`. The full recipe on the NSPanel
+  behind each overlay (`Qt.Tool` → `QNSPanel`):
+  - `collectionBehavior = CanJoinAllSpaces|FullScreenAuxiliary|Stationary` — appears
+    on every Space, including the game's fullscreen one.
+  - **NON-ACTIVATING panel** (`NSWindowStyleMaskNonactivatingPanel` + `setFloatingPanel_`
+    + `setBecomesKeyOnlyIfNeeded_`) — **the load-bearing fix**: without it, ordering
+    the overlay front *activates our app*, and macOS switches to our app's Space
+    (Desktop) instead of drawing over the game. Verify: `window.isKeyWindow()` is
+    False right after show.
+  - `setHidesOnDeactivate_(False)` — NSPanel utility panels otherwise hide whenever
+    another app (the game) is active.
+  - `setLevel_(NSScreenSaverWindowLevel)` set **LAST** — `setFloatingPanel_` resets
+    the level to `NSFloatingWindowLevel` (3), which isn't above a fullscreen game.
+  Applied at overlay **construction**, **before** every `show()`, and after it
+  (before-show so `show()` doesn't bind the window to the Desktop Space first; Qt's
+  per-show setup can also drop the tweaks). `accessory_mode` (default ON) further
+  keeps the app out of the Dock so it has no "home" Space to pull forward.
 - **DRM video / true exclusive-fullscreen** capture as a black frame by design
   (unfixable in software). `capture.is_black` detects this and the app tells the
   user to switch the game to Borderless Windowed.
 - Multi-display: the Quartz path captures from the **display under the region**
   (`_display_id_for_region`); a region straddling two displays only yields the
   chosen display's portion.
-- **Accessory mode** (`accessory_mode`, opt-in, default off): sets
+- **Accessory mode** (`accessory_mode`, **default ON**): sets
   `NSApplicationActivationPolicyAccessory` (no Dock icon / app menu — tray only) in
-  `macos.py`. Accessory apps don't get keyboard focus for a frameless overlay, so
+  `macos.py`. Default on so the full-screen overlay floats over other apps'
+  fullscreen Spaces (a Regular/Dock app switches Spaces on window-order-front).
+  Accessory apps don't get keyboard focus for a frameless overlay, so
   `_selector_focus_acquire/release` briefly restore Regular policy + `activate_app()`
   around region selection (restored on **both** the selected and cancelled paths).
   Applied at launch; toggling asks for a relaunch.
