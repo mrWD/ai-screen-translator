@@ -63,6 +63,14 @@ everything up automatically (no manual Python install needed):
 - **`run-silent.vbs`** — starts the app with **no console window** (everyday use);
   the log still goes to `%APPDATA%\ai-screen-translator\app.log`. Run setup once first.
 
+> **The first run is a large one-time download (~1 GB) and takes several minutes.**
+> It installs Python (if missing), the GUI/OCR dependencies, and the default
+> **offline** translation engine (Argos + ctranslate2/spacy/stanza/torch) plus the
+> en→ru language pack. The console will sit on `Installing dependencies…` /
+> `Downloading…` for a while — that's normal, not a hang. Later launches start in a
+> couple of seconds. (Prefer network-only and a tiny install? Comment out
+> `argostranslate` in `requirements.txt` and pick **Google** in Settings.)
+
 From a terminal it's the same:
 
 ```bat
