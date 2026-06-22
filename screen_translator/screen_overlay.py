@@ -30,29 +30,31 @@ class ScreenOverlay(QtWidgets.QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._opacity = max(0.0, min(1.0, opacity))
-        self._inplace = False
-        # box, text, font px, fill_rgb|None, text_rgb|None
-        self._laid: list[tuple] = []
-        self._applied_wid = None
+        self._laid: list[tuple] = []  # (box QRect, text, font px)
+        # Realize the NSWindow now and mark it CanJoinAllSpaces, so the very first
+        # show() draws over the current (game) Space instead of switching Spaces.
+        self._apply_macos_behavior()
 
     def set_opacity(self, opacity: float) -> None:
         self._opacity = max(0.0, min(1.0, opacity))
         self.update()
 
-    def show_blocks(self, blocks, screen: QtGui.QScreen, inplace: bool = False) -> None:
-        """`blocks` are (screen-logical QRect, translated text, fill_rgb, text_rgb).
-        The rgb int-tuples (or None) are used only in in-place mode. Positions are
-        mapped into this window, which is sized to the given screen."""
-        self._inplace = inplace
+    def show_blocks(self, blocks, screen: QtGui.QScreen) -> None:
+        """`blocks` are (screen-logical QRect, translated text). Positions are mapped
+        into this window, which is sized to the given screen."""
         geom = screen.geometry()
         self.setGeometry(geom)
         local = [
-            (QRect(r.x() - geom.x(), r.y() - geom.y(), r.width(), r.height()),
-             text, fill_rgb, text_rgb)
-            for r, text, fill_rgb, text_rgb in blocks
+            (QRect(r.x() - geom.x(), r.y() - geom.y(), r.width(), r.height()), text)
+            for r, text in blocks
         ]
         self._laid = self._layout(local, geom.width(), geom.height())
         self.update()
+        # Set CanJoinAllSpaces BEFORE showing: otherwise show() binds the window to
+        # our home (Desktop) Space and pulls that Space forward instead of drawing
+        # over the game's fullscreen Space. Re-assert after show too (Qt re-runs its
+        # own window setup at show time and can drop the tweak).
+        self._apply_macos_behavior()
         self.show()
         self.raise_()
         self._apply_macos_behavior()
@@ -61,18 +63,12 @@ class ScreenOverlay(QtWidgets.QWidget):
     def _layout(self, blocks, screen_w: int, screen_h: int):
         placed: list[QRect] = []
         laid = []
-        for rect, text, fill_rgb, text_rgb in sorted(blocks, key=lambda b: (b[0].y(), b[0].x())):
-            if self._inplace:
-                # Anchor exactly on the original so the erase aligns — never grow
-                # or nudge the box, or the cover-up would expose the source text.
-                font_px = max(11, min(int(rect.height() * 0.72), 36))
-                box = QRect(rect)
-            else:
-                font_px = max(13, min(int(rect.height() * 0.72), 36))
-                box = self._grow_box(text, rect, font_px, screen_w, screen_h)
-                box = self._avoid_overlap(box, placed, screen_h)
+        for rect, text in sorted(blocks, key=lambda b: (b[0].y(), b[0].x())):
+            font_px = max(13, min(int(rect.height() * 0.72), 36))
+            box = self._grow_box(text, rect, font_px, screen_w, screen_h)
+            box = self._avoid_overlap(box, placed, screen_h)
             placed.append(box)
-            laid.append((box, text, font_px, fill_rgb, text_rgb))
+            laid.append((box, text, font_px))
         return laid
 
     def _grow_box(self, text, rect, font_px, screen_w, screen_h) -> QRect:
@@ -112,22 +108,14 @@ class ScreenOverlay(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
         font = painter.font()
-        for box, text, font_px, fill_rgb, text_rgb in self._laid:
+        for box, text, font_px in self._laid:
             painter.setPen(Qt.NoPen)
-            if self._inplace and fill_rgb is not None:
-                # Opaque fill erases the original; ignore self._opacity so it's solid.
-                painter.setBrush(QtGui.QColor(fill_rgb[0], fill_rgb[1], fill_rgb[2]))
-                painter.drawRect(box)
-                pen = QtGui.QColor(*text_rgb) if text_rgb else QtGui.QColor("white")
-                text_box = box.adjusted(2, 0, -2, 0)
-            else:
-                painter.setBrush(QtGui.QColor(18, 18, 22, int(self._opacity * 255)))
-                painter.drawRoundedRect(box.adjusted(-2, -2, 2, 2), 5, 5)
-                pen = QtGui.QColor("white")
-                text_box = box.adjusted(self._PAD_X, self._PAD_Y, -self._PAD_X, -self._PAD_Y)
+            painter.setBrush(QtGui.QColor(18, 18, 22, int(self._opacity * 255)))
+            painter.drawRoundedRect(box.adjusted(-2, -2, 2, 2), 5, 5)
+            text_box = box.adjusted(self._PAD_X, self._PAD_Y, -self._PAD_X, -self._PAD_Y)
             font.setPixelSize(font_px)
             painter.setFont(font)
-            painter.setPen(pen)
+            painter.setPen(QtGui.QColor("white"))
             painter.drawText(text_box, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
 
     def _apply_macos_behavior(self) -> None:
@@ -136,12 +124,13 @@ class ScreenOverlay(QtWidgets.QWidget):
         if QtGui.QGuiApplication.platformName() != "cocoa":
             return
         wid = int(self.winId())
-        if not wid or wid == self._applied_wid:
+        if not wid:
             return
+        # Re-apply on every show: Qt re-runs its own window setup across hide/show
+        # cycles and can drop our collectionBehavior / hidesOnDeactivate tweaks.
         try:
             from .macos import make_overlay_join_all_spaces
 
             make_overlay_join_all_spaces(wid)
-            self._applied_wid = wid
         except Exception:
             pass

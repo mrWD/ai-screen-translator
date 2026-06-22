@@ -8,19 +8,21 @@ can continue this project. Read this + `README.md` + the code, then continue.
 ## What it is
 
 A hotkey-driven screen OCR + translation overlay for games / films / anything
-on screen. User presses a hotkey → the foreign text on screen is translated and
-shown **in place** over the original. Everything is also **saved to disk** so the
-user can review (and select/copy) original + translation **after closing the game**.
+on screen. User **holds a key** → the whole screen is OCR'd, translated, and each
+translation drawn in a box over the original, **while held**. Everything is also
+**saved to disk** so the user can review (and select/copy) original + translation
+**after closing the game**.
 
-Original use case (the bar to meet):
+Use case (the bar to meet):
 1. User plays a game / watches a film.
-2. Sees foreign text, presses a hotkey.
-3. Translation appears in place of the foreign text.
-4. The screen with text is saved to disk, openable AFTER closing the game.
+2. Sees foreign text, holds the full-screen key (default F6).
+3. Translations appear over the foreign text while held; release to hide.
+4. The screen + text is saved to disk, openable AFTER closing the game.
 5. User can see ORIGINAL + TRANSLATION and SELECT/COPY the text.
 
-All five are implemented. Translation is pluggable — free Google (no API key) is
-the default, with optional DeepL (API key) and offline Argos backends.
+Translation is pluggable — free Google (no API key) is the default, with an
+optional offline Argos backend. (Region/part-of-screen + live modes were removed;
+full-screen hold is the only translate mode now.)
 
 ---
 
@@ -43,20 +45,19 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 | Hotkey | Action |
 |---|---|
-| `Cmd+Shift+T` | Translate the saved region once (panel appears beside it) |
-| `Cmd+Shift+F` | Translate the whole screen, in place |
-| Right Option `⌥` (hold) | Show whole-screen translation **while held**, hide on release |
-| `Cmd+Shift+L` | Toggle live mode (auto re-translate the region on change) |
-| `Cmd+Shift+R` | Re-select the region |
-| `Cmd+Shift+H` | Hide overlays |
+| `F6` (hold) | Translate the whole screen **while held**, hide on release |
+| `Cmd+Shift+H` | Hide the overlay |
 
 - **Menu**: a `Translator` menu (top-left menu bar) + tray icon `文`. Items:
-  Translate now / Translate full screen / Live mode / Select region / Hide /
-  Copy last result / Open translation log / Open history folder / Source &
-  Target language / Settings / Quit.
-- **Settings dialog**: languages, OCR engine, live interval, overlay font/opacity,
-  save_history/save_screenshots, and **click-to-record hotkeys** (press a key; single
-  keys like F6 work, chords too).
+  Translate full screen / Hide overlay / Copy last result / Open translation log /
+  Open history folder / Source & Target language / Settings / Quit.
+- **Settings dialog**: languages (25), Fast OCR, translation engine + offline-model
+  download, overlay font/opacity, save_history/save_screenshots, Suppress, and
+  **click-to-record hotkeys** for the hold + hide keys (single keys like F6 work,
+  chords too). Some config fields are deliberately NOT exposed (kept at safe
+  defaults): `ocr_engine` (auto routes correctly), `accessory_mode` (always on — a
+  footgun as a toggle). The region/live modes, `overlay_inplace`, and the DeepL
+  backend were removed.
 - **History**: every capture → `~/Library/Application Support/ai-screen-translator/history/<session>/session.jsonl` (+ downscaled screenshot PNG). "Open translation log" builds `index.html` (original|translation pairs, selectable/copyable, works with the app closed).
 
 ---
@@ -65,26 +66,24 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 - `app.py` — tray/menu UI shell + wiring. Hold-mode handlers, history persistence,
   settings apply, hotkey setup, menu building. Delegates the heavy lifting:
-  - `jobs.py` — worker `QRunnable`s (`Job` region/live, `ScreenJob` full-screen) run
-    OCR+translate off the UI thread and emit results via signals. `ScreenJob` fans
-    per-block translate calls out concurrently (bounded executor; lock-guarded cache).
-  - `pipeline.py` — pure, Qt-free logic the jobs call (scale/box mapping, junk
-    filter, dedup, colour sampling). Unit-tested in `tests/`.
+  - `jobs.py` — `ScreenJob` (full-screen) runs OCR+translate off the UI thread and
+    emits results via signals. It fans per-block translate calls out concurrently
+    (bounded executor; lock-guarded cache), or one batched call for Argos.
+  - `pipeline.py` — pure, Qt-free logic the job calls (scale/box mapping, junk
+    filter). Unit-tested in `tests/`.
   - `gating.py` — `BusyGate`, the single-in-flight (`gate.busy`) + hold-retry state
     machine. Unit-tested in `tests/`.
 - `capture.py` — screen capture. **macOS: native Quartz** `CGDisplayCreateImageForRect`
   (full Retina res). Else mss. Logical-coords in; returns RGB PIL image. `is_black()`.
 - `ocr.py` — pluggable OCR. `VisionOCR` (Apple Vision via ocrmac) + `RapidOCRBackend`.
   `recognize()` → text; `recognize_blocks()` → `Block(text,x,y,w,h)` in image pixels.
-- `translate.py` — pluggable: `GoogleFreeBackend` / `DeepLBackend` / `ArgosBackend`
+- `translate.py` — pluggable: `GoogleFreeBackend` / `ArgosBackend`
   behind `make_translator`, mirroring `ocr.make_ocr`. Per-backend (source,target,text)
   cache + uniform `TranslateError`. Module-level `translate()` kept for the smoke test.
-- `region_selector.py` — drag-to-select region (frameless top-most overlay).
-- `overlay.py` — region-mode translucent click-through panel, anchored BESIDE the
-  region (never over it → no self-capture feedback loop).
-- `screen_overlay.py` — full-screen click-through overlay; legacy boxes grow-to-fit +
-  de-overlap, OR in-place mode that erases each block with a sampled fill anchored on
-  the original.
+- `overlay.py` — the small "⏳ Translating…" indicator panel (click-through),
+  shown near the cursor while a full-screen translate runs.
+- `screen_overlay.py` — full-screen click-through overlay; translucent boxes
+  grow-to-fit + de-overlap, drawn over the text.
 - `hotkeys.py` — **single** pynput Listener driving chord HotKeys + hold key.
 - `hotkey_edit.py` — click-to-record hotkey field; Qt key → pynput string.
 - `history.py` — JSONL + PNG persistence + `index.html` renderer.
@@ -118,35 +117,37 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   selectable — selection/copy is delivered via the history `index.html` (and "Copy
   last result"). This is intentional, not a bug.
 - **macOS NSWindow collectionBehavior** (`macos.py`) lets overlays float over
-  fullscreen Spaces — needed for GeForce Now in macOS fullscreen.
+  fullscreen Spaces — needed for GeForce Now in macOS fullscreen. The fix that made
+  it actually appear over another app's fullscreen Space (not just on Desktop) was
+  `setHidesOnDeactivate_(False)`: `Qt.Tool` = NSPanel utility panel, which hides when
+  another app is active (the GFN game owns the foreground there). Re-applied on every
+  show. **Verify live** with a GFN game in a fullscreen Space: hold F6, the
+  translation must appear over the game, not only on the Desktop Space.
 - **GeForce Now works** (it's a composited window). **DRM video = black frame** by
   design (unfixable). **True exclusive-fullscreen games** bypass the overlay → tell
   the user to switch to Borderless. The app detects all-black and messages it.
-- **Accessory mode** (`accessory_mode`, opt-in, default off) sets
+- **Accessory mode** (`accessory_mode`, **default ON**, no UI toggle) sets
   `NSApplicationActivationPolicyAccessory` (no Dock icon / app menu — tray only).
-  Accessory apps don't get keyboard focus for a frameless overlay, so
-  `_selector_focus_acquire/release` briefly restore Regular policy + `activate_app()`
-  around region selection (restored on BOTH the selected and cancelled paths).
-  Applied at launch; toggling asks for a relaunch.
+  Default on because a **Regular (Dock) app switches Spaces** when it orders a window
+  front, so the full-screen overlay would appear on the Desktop Space instead of over
+  a GeForce Now game's fullscreen Space — an accessory app floats over it in place.
+  Applied at launch.
 - **History JSONL had silently broken**: the `session.jsonl` write had drifted into
   dead code after a `return` in `HistoryWriter._downscaled`, so nothing was logged
   (screenshots saved, but "Open translation log" was always empty). Fixed — the write
   is back in `add()`.
-- **In-place fill is sampled OFF the UI thread** by `pipeline.sample_block_colors`,
-  called in `jobs.ScreenJob` from the captured PIL image (the click-through overlay
-  can't read screen pixels at paint time) and passed through as plain `(r,g,b)`
-  tuples — `QColor` is built only in the overlay's paint on the UI thread.
-  `ScreenJob`'s `done` signal carries 5-tuples
-  `(rect, orig, translated, fill_rgb, text_rgb)`; in-place layout anchors on the
-  original (no grow/de-overlap) so the erase aligns.
+- **Full-screen overlay**: `ScreenJob`'s `done` signal carries
+  `(rect, orig, translated)` 3-tuples; `screen_overlay.show_blocks` takes
+  `(rect, text)` and draws translucent boxes (grow-to-fit + de-overlap). `QColor` is
+  built only in the overlay's paint on the UI thread (never off it). (The old in-place
+  fill mode + `pipeline.sample_block_colors` were removed.)
 - **Translation backend mirrors OCR**: built lazily on the UI thread
-  (`_get_translator`), reset to None on engine/key change, and the instance is passed
-  into the worker job — never call a module global from the worker. NOT reset on a
-  source change (its cache is keyed by source, so one instance serves all).
-  `make_translator` surfaces a clear error for explicit `deepl` with no key (no silent
-  fallback to Google). DeepL targets map Chinese to ZH-HANS/ZH-HANT (bare ZH target =
-  Simplified). On macOS, `capture._grab_quartz` subtracts the chosen display's bounds
-  origin because `CGDisplayCreateImageForRect`'s rect is display-LOCAL, not global.
+  (`_get_translator`), reset to None on engine/model-dir change, and the instance is
+  passed into the worker job — never call a module global from the worker. NOT reset on a
+  source change (its cache is keyed by source, so one instance serves all). Engines:
+  free Google (default) and offline Argos. On macOS, `capture._grab_quartz` subtracts
+  the chosen display's bounds origin because `CGDisplayCreateImageForRect`'s rect is
+  display-LOCAL, not global.
 
 ---
 
@@ -154,20 +155,51 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 **Implemented since the last handoff — need live confirmation on the real machine:**
 - **Multi-display capture** — `capture._display_id_for_region` picks the display under
-  the region (was `CGMainDisplayID()` only). Verify on a real two-display rig.
-- **Accessory mode** — opt-in (Settings → Dock; needs relaunch). VERIFY the region
-  selector still gets keyboard focus (Esc to cancel + mouse drag) with it on, and that
-  the Dock icon does NOT reappear afterward — this is the exact focus risk it was
-  deferred over.
-- **In-place text replacement** — opt-in (`overlay_inplace`). Confirm the erase aligns
-  and looks right over a real game (flat fill won't match textured/gradient bgs).
-- **Pluggable translation** — DeepL (needs a key) and offline Argos (needs
-  `pip install argostranslate` + an explicit source). Confirm a real DeepL key and an
-  installed Argos pack actually translate.
+  the cursor (was `CGMainDisplayID()` only). Verify on a real two-display rig.
+- **Accessory mode** — **default ON**, no UI toggle. App is always menu-bar-only.
+- **Offline translation** — Argos (needs an Argos pack + an explicit source).
+  **Settings → Offline model → Download** (`offline_models.download_model`, run on a
+  `QRunnable` so the modal dialog stays responsive) pip-installs argostranslate if
+  missing and fetches the pack — direct if Argos has one, else pivoting through
+  English (`offline_models.plan_packages`, unit-tested in
+  `tests/test_offline_models.py`). Confirm a freshly-downloaded Argos pack translates.
+
+  **Gotcha — Argos must run in a subprocess.** argostranslate pulls in
+  stanza → PyTorch, and torch SEGFAULTs when its GIL is acquired from a Qt
+  `QThreadPool` worker thread (`take_gil` ← `gil_scoped_acquire` in
+  `libtorch_python`, while stanza inits a torch model). The job layer always runs
+  translation off the UI thread, so calling argos in-process is guaranteed to
+  crash. `ArgosBackend` therefore never imports argostranslate; it spawns
+  `python -m screen_translator.argos_proc` and exchanges newline-delimited JSON
+  (one request/response per line) over stdin/stdout. torch lives on the child's
+  main thread, our worker thread only does blocking pipe I/O. The child is
+  lazy-spawned on first translate, persists across calls, and exits on stdin EOF
+  when the app quits. **Do not "optimize" this back to an in-process call.**
 
 **Still open:**
+- **Capture uses the deprecated `CGDisplayCreateImageForRect`** (`capture._grab_quartz`).
+  Deprecated since macOS 14 but still works (and is fast, ~85ms) on macOS 26. When
+  Apple removes it, migrate to **ScreenCaptureKit** (`pyobjc-framework-ScreenCaptureKit`,
+  not currently a dep): `SCShareableContent.getShareableContent…` → `SCContentFilter`
+  (cache the per-display filter so it isn't rebuilt every grab) → `SCStreamConfiguration`
+  → `SCScreenshotManager.captureImageWithFilter:configuration:completionHandler:`,
+  blocking on a semaphore for the async result, then reuse `_cgimage_to_pil`. Make it
+  the primary path with the current Quartz path as fallback. Deferred for now — no
+  point taking the async-rewrite + dependency risk while the deprecated call still works.
 - **Verify Right Option (`<alt_r>`) hold + hotkey recording on the real machine** — the
   two-listener crash fix still needs a live confirmation.
+- **Verify hotkey suppression (`suppress_hotkeys`).** macOS: needs Accessibility
+  trust (the active event tap) — confirm a plain function key (e.g. F6, or F1 with
+  "standard function keys" on) both translates AND no longer triggers its default;
+  confirm the tap isn't disabled by timeout under load. Windows is **untested** —
+  the `win32_event_filter` dispatch path (`hotkeys.py`) needs a real run. macOS
+  F1/F2/media keys can't be caught (system events, not key events) — expected.
+- **macOS 26 TSM/keyboard-layout crash (FIXED, verify live).** Once Accessibility
+  was granted and keys reached pynput, the app SIGTRAP'd: pynput resolves the
+  keyboard layout via Carbon TSM APIs on its listener thread, and macOS 26 asserts
+  those are main-thread-only. `hotkeys._patch_darwin_keycode_context()` pre-resolves
+  the layout on the main thread and caches it for the listener. Confirm hotkeys now
+  fire on the real machine without the "Python quit unexpectedly" SIGTRAP.
 - Windows/Linux native capture backends (currently mss fallback there).
 - LLM / context-aware translation tiers.
 - Package as a signed `.app` (so permissions stick to the app, not Terminal).

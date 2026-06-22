@@ -1,7 +1,7 @@
-"""Persistent settings: languages, capture region, hotkeys, OCR engine.
+"""Persistent settings: languages, hotkeys, OCR/translation engines.
 
-Stored as JSON in the user config dir (NOT in the repo), so the app remembers
-the last region and language choice between runs.
+Stored as JSON in the user config dir (NOT in the repo), so the app remembers the
+language and other choices between runs.
 """
 
 from __future__ import annotations
@@ -47,26 +47,23 @@ class Config:
     source: str = "en"
     target: str = "ru"
     ocr_engine: str = "auto"  # "auto" | "vision" | "rapidocr"
-    translate_engine: str = "google"  # "google" | "deepl" | "offline"
-    deepl_api_key: str = ""           # required for the "deepl" engine
+    ocr_fast: bool = True     # Apple Vision "fast" recognition (≈2x faster); off = "accurate"
+    translate_engine: str = "google"  # "google" | "offline"
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default
-    region: Region | None = None
-    hotkey_translate: str = f"{_MOD}+<shift>+t"
-    hotkey_fullscreen: str = f"{_MOD}+<shift>+f"
-    hotkey_reselect: str = f"{_MOD}+<shift>+r"
     hotkey_hide: str = f"{_MOD}+<shift>+h"
-    hotkey_live: str = f"{_MOD}+<shift>+l"
-    hotkey_hold: str = "<alt_r>"  # hold to show full-screen translation, release to hide.
-    # Right Option: does nothing on its own in macOS and isn't a reserved shortcut,
-    # unlike the F-keys (F7/F8/F9 are media ⏮/⏯/⏭ by default and launch Music).
-    live_interval_ms: int = 800
+    hotkey_hold: str = "<f6>"  # HOLD to show the full-screen translation; release hides it.
+    # A single, modifier-free key works best for hold. Pair with suppress_hotkeys so
+    # the key's own action (F6 = brightness/etc.) is swallowed while you hold it.
+    suppress_hotkeys: bool = False  # swallow a single-key hotkey's normal action
+    # (e.g. F6's default). Only single, modifier-free keys; macOS needs Accessibility.
     overlay_font_pt: int = 18
     overlay_opacity: float = 0.85
-    overlay_inplace: bool = False  # erase original + draw translation in place (full-screen)
     save_history: bool = True
     save_screenshots: bool = True
     history_keep_sessions: int = 20
-    accessory_mode: bool = False  # macOS: menu-bar-only (no Dock icon); needs relaunch
+    accessory_mode: bool = True  # macOS: menu-bar-only (no Dock icon); needs relaunch.
+    # Default on: an accessory app's overlay floats over other apps' native-fullscreen
+    # Spaces (GeForce Now games) without switching Space — a Regular (Dock) app can't.
 
     @classmethod
     def load(cls) -> "Config":
@@ -74,13 +71,12 @@ class Config:
             data = json.loads(CONFIG_PATH.read_text("utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return cls()
-        region = data.pop("region", None)
-        # Drop unknown keys so older/newer config files don't crash construction.
-        known = {f for f in cls.__dataclass_fields__ if f != "region"}
+        # Drop unknown keys so older/newer config files don't crash construction
+        # (e.g. the removed region/live/deepl fields from an earlier version).
+        known = set(cls.__dataclass_fields__)
         cfg = cls(**{k: v for k, v in data.items() if k in known})
-        if region:
-            region_fields = Region.__dataclass_fields__
-            cfg.region = Region(**{k: v for k, v in region.items() if k in region_fields})
+        if cfg.translate_engine not in ("google", "offline"):
+            cfg.translate_engine = "google"  # e.g. a stale "deepl" from an old config
         return cfg
 
     def save(self) -> None:

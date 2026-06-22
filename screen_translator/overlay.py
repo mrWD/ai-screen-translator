@@ -1,10 +1,8 @@
-"""Translucent, always-on-top, click-through panel that shows the translation
-just below (or above) the original text. Click-through (Qt.WindowTransparentForInput)
-means mouse/keyboard pass straight to the game underneath.
-
-The panel is anchored ADJACENT to the captured region, never over it, so live
-mode can keep re-capturing the same region without grabbing our own translation
-(which would create an OCR feedback loop) and the original text stays visible.
+"""Translucent, always-on-top, click-through panel — used for the small
+"⏳ Translating…" indicator shown near the cursor while a full-screen translation
+runs. Click-through (Qt.WindowTransparentForInput) means mouse/keyboard pass
+straight to the game underneath; it floats over fullscreen Spaces via the same
+NSWindow tweak as the full-screen overlay (see macos.make_overlay_join_all_spaces).
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ class Overlay(QtWidgets.QWidget):
         self._opacity = max(0.0, min(1.0, opacity))
         self._font_pt = font_pt
         self._radius = 10
-        self._applied_wid = None  # NSWindow tweak is re-applied if winId changes
 
         self._label = QtWidgets.QLabel(self)
         self._label.setWordWrap(True)
@@ -40,13 +37,18 @@ class Overlay(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
         self._restyle()
+        # Realize the NSWindow now and mark it CanJoinAllSpaces, so the first show()
+        # floats over the current Space instead of switching to our home Space.
+        self._apply_macos_behavior()
 
     # ---- styling ----
     def _restyle(self) -> None:
+        # No explicit font-family: Qt's default is already the OS UI font (SF on
+        # macOS, Segoe UI on Windows). Naming "-apple-system" made Qt scan every
+        # font alias trying to resolve it — a ~650ms one-time hit on first show.
         self._label.setStyleSheet(
             "color: white;"
             f"font-size: {self._font_pt}pt;"
-            "font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;"
             "padding: 10px;"
         )
 
@@ -72,10 +74,12 @@ class Overlay(QtWidgets.QWidget):
         self._label.setFixedWidth(max(220, region.width()))
         self.adjustSize()
         self.move(self._anchor(region))
+        # Apply CanJoinAllSpaces BEFORE show() so showing the panel doesn't switch
+        # macOS to our home Space (winId() realizes the NSWindow without showing it).
+        # Re-assert after show too, since Qt's show-time setup can drop the tweak.
+        self._apply_macos_behavior()
         self.show()
         self.raise_()
-        # winId() only yields a valid NSView once the native window exists,
-        # i.e. after show() — so apply the macOS tweak here, not before.
         self._apply_macos_behavior()
 
     def _anchor(self, region: QRect) -> QPoint:
@@ -104,14 +108,14 @@ class Overlay(QtWidgets.QWidget):
         if QtGui.QGuiApplication.platformName() != "cocoa":
             return
         wid = int(self.winId())
-        # Re-apply if the native window was recreated (winId changed) across a
-        # hide/show cycle — otherwise the panel loses its float-over-fullscreen.
-        if not wid or wid == self._applied_wid:
+        if not wid:
             return
+        # Re-apply on every show: Qt re-runs its window setup across hide/show
+        # cycles and can drop our collectionBehavior / hidesOnDeactivate tweaks,
+        # which would make the panel lose its float-over-fullscreen.
         try:
             from .macos import make_overlay_join_all_spaces
 
             make_overlay_join_all_spaces(wid)
-            self._applied_wid = wid
         except Exception:
             pass  # best-effort; overlay still works on non-fullscreen content

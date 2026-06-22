@@ -71,7 +71,11 @@ class HotkeyEdit(QtWidgets.QLineEdit):
         self.setCursor(Qt.PointingHandCursor)
         self._value = value
         self._recording = False
-        self.setText(value)
+        self.setText(self._display(value))
+
+    @staticmethod
+    def _display(value: str) -> str:
+        return value if value else "(none)"
 
     def hotkey(self) -> str:
         return self._value
@@ -82,12 +86,12 @@ class HotkeyEdit(QtWidgets.QLineEdit):
 
     def _start_recording(self) -> None:
         self._recording = True
-        self.setText("press a key…  (Esc to cancel)")
+        self.setText("press a key…  (⌫ to clear, Esc to cancel)")
         self.setFocus()
 
     def _stop_recording(self) -> None:
         self._recording = False
-        self.setText(self._value)
+        self.setText(self._display(self._value))
 
     def keyPressEvent(self, event) -> None:
         if not self._recording:
@@ -98,6 +102,11 @@ class HotkeyEdit(QtWidgets.QLineEdit):
             return  # a bare modifier — wait for the actual key
         if key == Qt.Key_Escape:
             self._stop_recording()
+            return
+        if key in (Qt.Key_Backspace, Qt.Key_Delete):
+            self._value = ""  # clear -> disables this hotkey
+            self._recording = False
+            self.setText(self._display(""))
             return
         token = qt_key_to_pynput(event)
         if token:
