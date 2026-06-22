@@ -152,7 +152,30 @@ def main() -> int:
 
     fast = _FastBatch()
 
+    def _has_route(frm: str, to: str) -> bool:
+        """True if an installed Argos pack can translate frm→to, directly OR via the
+        English pivot (mirrors offline_models.plan_packages). Lets us fail loudly when
+        the model is missing instead of silently returning empty translations."""
+        try:
+            import argostranslate.package as _pkg
+
+            pairs = {(p.from_code, p.to_code) for p in _pkg.get_installed_packages()}
+        except Exception:
+            return True  # can't introspect — let the translate attempt surface errors
+        f, t = frm.split("-")[0], to.split("-")[0]
+        if (f, t) in pairs:
+            return True
+        return f != "en" and t != "en" and (f, "en") in pairs and ("en", t) in pairs
+
+    def _require_route(frm: str, to: str) -> None:
+        if not _has_route(frm, to):
+            raise RuntimeError(
+                f"No offline model for {frm.split('-')[0]}→{to.split('-')[0]} — open "
+                "Settings → Offline model → Download."
+            )
+
     def translate_many(texts, frm, to):
+        _require_route(frm, to)  # missing model -> loud error, not a blank overlay
         try:
             return fast.translate(texts, frm, to)  # one batched ctranslate2 run
         except Exception:
@@ -175,6 +198,7 @@ def main() -> int:
                 if "texts" in req:  # batch (full-screen): one round-trip for N blocks
                     resp = {"ok": True, "texts": translate_many(req["texts"], req["from"], req["to"])}
                 else:
+                    _require_route(req["from"], req["to"])
                     resp = {"ok": True, "text": argos.translate(req["text"], req["from"], req["to"])}
             except Exception as exc:  # surface per-request errors without killing the worker
                 resp = {"ok": False, "error": str(exc)}

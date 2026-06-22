@@ -48,7 +48,7 @@ class Config:
     target: str = "ru"
     ocr_engine: str = "auto"  # "auto" | "vision" | "rapidocr"
     ocr_fast: bool = True     # Apple Vision "fast" recognition (≈2x faster); off = "accurate"
-    translate_engine: str = "google"  # "google" | "offline"
+    translate_engine: str = "offline"  # "offline" (default, on-device) | "google" (free, needs net)
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default
     hotkey_hide: str = f"{_MOD}+<shift>+h"
     hotkey_hold: str = "<f6>"  # HOLD to show the full-screen translation; release hides it.
@@ -76,7 +76,12 @@ class Config:
         known = set(cls.__dataclass_fields__)
         cfg = cls(**{k: v for k, v in data.items() if k in known})
         if cfg.translate_engine not in ("google", "offline"):
-            cfg.translate_engine = "google"  # e.g. a stale "deepl" from an old config
+            cfg.translate_engine = "offline"  # fall back to the default; e.g. a stale "deepl"
+        if sys.platform != "darwin" and cfg.ocr_engine == "vision":
+            # Apple Vision is macOS-only; a config.json carried from a Mac would
+            # otherwise force an engine that can't build here. Let make_ocr route to
+            # the cross-platform RapidOCR instead of erroring on startup.
+            cfg.ocr_engine = "auto"
         return cfg
 
     def save(self) -> None:

@@ -5,9 +5,10 @@ a translation of the whole screen appears in an overlay over it, while held.
 
 **Pipeline:** hotkey → capture screen → OCR → translate → overlay.
 
-This is the v1 prototype: Python + PySide6, Apple Vision OCR on macOS, and the
-**free Google Translate** endpoint (no API key). It is architected so the OCR
-and translation engines are pluggable for a later cross-platform build.
+This is the v1 prototype: Python + PySide6, Apple Vision OCR on macOS (RapidOCR
+elsewhere), and **offline on-device translation** (Argos Translate) by default —
+with the free **Google Translate** endpoint (no API key) available as a network
+option. It is architected so the OCR and translation engines are pluggable.
 
 ---
 
@@ -36,6 +37,69 @@ The app needs two permissions for the terminal/app you launch it from
    (pynput). Without it, use the menu-bar icon's actions instead.
 
 You'll be prompted on first use; you may need to quit and relaunch after granting.
+
+---
+
+## Quick start (Windows / Linux)
+
+> Cross-platform support is **functional but not yet hardware-tested** — macOS is
+> the primary, exercised target. On Windows/Linux the app uses the cross-platform
+> **RapidOCR** engine (auto-installed from `requirements.txt`) instead of Apple
+> Vision, and **mss** for capture. Expect rough edges; bug reports welcome.
+
+**Windows** — just double-click **`run.bat`** in Explorer. The first run sets
+everything up automatically (no manual Python install needed):
+
+- **`setup.bat`** — installer, run once. Finds Python 3, or installs Python 3.12
+  via `winget` if it's missing (per-user, no admin), then creates the virtual
+  environment and installs deps (incl. rapidocr). Double-clickable. The venv is
+  created at `%LOCALAPPDATA%\ai-screen-translator\venv` (a short path, on purpose:
+  PySide6's long internal paths overflow Windows' 260-char limit inside a deep
+  project folder).
+- **`run.bat`** — launcher, double-click each time. Starts the tray app and keeps
+  a console window open showing the live log. If setup hasn't run yet, it runs it
+  first, so double-clicking `run.bat` alone is enough.
+- **`run-debug.bat`** — same as `run.bat` but with verbose (`ST_LOG=debug`) logging.
+- **`run-silent.vbs`** — starts the app with **no console window** (everyday use);
+  the log still goes to `%APPDATA%\ai-screen-translator\app.log`. Run setup once first.
+
+> **The first run is a large one-time download (~1 GB) and takes several minutes.**
+> It installs Python (if missing), the GUI/OCR dependencies, and the default
+> **offline** translation engine (Argos + ctranslate2/spacy/stanza/torch) plus the
+> en→ru language pack. The console will sit on `Installing dependencies…` /
+> `Downloading…` for a while — that's normal, not a hang. Later launches start in a
+> couple of seconds. (Prefer network-only and a tiny install? Comment out
+> `argostranslate` in `requirements.txt` and pick **Google** in Settings.)
+
+From a terminal it's the same:
+
+```bat
+cd ai-screen-translator
+run.bat            REM first run installs Python (if needed) + deps, then launches
+```
+
+For verbose logs, set `ST_LOG=debug` before launching (PowerShell:
+`$env:ST_LOG="debug"; .\run.bat`).
+
+**Linux** (X11 session, Python 3.12+):
+
+```bash
+cd ai-screen-translator
+./run.sh           # creates .venv, installs deps (incl. rapidocr), launches the tray app
+```
+
+Notes:
+- **OCR model**: the first run downloads the RapidOCR ONNX models (a few tens of MB).
+- **Linux needs a system tray** (GNOME may need the AppIndicator extension) and the
+  usual Qt xcb libs, e.g. on Debian/Ubuntu:
+  `sudo apt install libxcb-xinerama0 libxcb-cursor0`.
+- **Global hotkeys are X11-only.** Under **Wayland**, the hold-to-translate key won't
+  fire (the app detects this and tells you) — use the tray menu's **Translate full
+  screen**, or run an X11/XWayland session.
+- **Key suppression** (blocking a key's normal action) is **macOS/Windows only** —
+  the option is disabled on Linux.
+- High-DPI displays are handled (capture scales logical→physical coords), but the
+  exact behavior on mixed-DPI multi-monitor setups is untested.
 
 ---
 
@@ -114,13 +178,17 @@ On macOS it needs Accessibility permission, and the brightness/media keys
 (F1/F2/F7–F12 in their default mode) can't be intercepted — pick a plain function
 key, or enable “Use F1, F2 as standard function keys”.
 
-**Translation engines:** the default is the free Google endpoint (no key, needs
-internet). Or pick **offline** (Argos Translate) for on-device, no-network
-translation. For offline, click **Settings → Offline
-model → Download model for the selected languages** — it installs Argos Translate
-(if missing) and downloads the language pack for your source/target (pivoting
-through English when there's no direct pack). Offline can't auto-detect, so set an
-explicit source.
+**Translation engines:** the default is **offline** (Argos Translate) — fully
+on-device, no network. The setup scripts (`setup.bat` / `run.sh`) install it and
+download the language pack for the default `source→target` (en→ru) automatically,
+so it works out of the box; this is the ~1 GB the install pulls (ctranslate2 +
+spacy/stanza/torch). Offline can't auto-detect, so set an explicit source. If you
+switch to a source/target language whose pack isn't installed, the app **offers to
+download it on the spot** and applies it without a restart. To use a
+different language pair offline, click **Settings → Offline model → Download model
+for the selected languages** (pivots through English when there's no direct pack).
+Or switch to the free **Google** endpoint (no key, needs internet) in Settings —
+and comment out `argostranslate` in `requirements.txt` to skip the heavy install.
 
 ---
 
@@ -186,11 +254,12 @@ tools/smoke_test.py  # headless OCR+translate verification
 
 ## Known limitations / roadmap
 
-- **OCR**: Apple Vision can't read Cyrillic. For a Russian/Ukrainian *source*,
-  install `rapidocr-onnxruntime` and set `ocr_engine` to `rapidocr`.
+- **OCR**: macOS uses Apple Vision (its *fast* level reads ~30 scripts incl.
+  Cyrillic/CJK; *accurate* is Latin-only). Windows/Linux use **RapidOCR**
+  (auto-installed), which has no per-language hint — accuracy varies by language.
 - **Capture**: macOS uses native Quartz at full Retina resolution (crisp OCR);
-  other platforms fall back to `mss`. Windows/Linux native backends
-  (Windows.Graphics.Capture, PipeWire) are future work.
+  Windows/Linux fall back to `mss` (logical→physical coords scaled by DPI). Native
+  backends (Windows.Graphics.Capture, PipeWire) are future work.
 - **Multi-monitor**: macOS now captures from the display under the region; a
   region straddling two displays still only yields the chosen display's portion.
 - **Linux/Wayland**: global hotkeys and always-on-top are restricted; X11 works

@@ -8,6 +8,7 @@ the off-thread OCR/translate workers in `jobs.py`, their framework-free logic in
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import QRect, Qt, QThreadPool, QTimer, QUrl
 
-from . import capture, languages, log
+from . import capture, languages, log, offline_models
 from .config import Config, Region, history_dir
 from .gating import BusyGate
 from .history import HistoryWriter, build_index
@@ -24,7 +25,7 @@ from .jobs import ScreenJob
 from .ocr import OCRBackend, make_ocr
 from .overlay import Overlay
 from .screen_overlay import ScreenOverlay
-from .settings_dialog import SettingsDialog
+from .settings_dialog import SettingsDialog, _ModelDownloadWorker
 from .translate import TranslateBackend, make_translator
 
 _log = logging.getLogger(__name__)
@@ -33,6 +34,17 @@ _log = logging.getLogger(__name__)
 # (slow, e.g. offline) translation finished — so the work isn't wasted, but it
 # still auto-hides instead of lingering forever.
 _HOLD_LINGER_MS = 7000
+
+
+def _is_wayland() -> bool:
+    """True on a Linux Wayland session, where pynput's X11 global-hotkey backend
+    receives no events. (XWayland still exposes DISPLAY, so require its absence.)"""
+    if not sys.platform.startswith("linux"):
+        return False
+    return (
+        os.environ.get("XDG_SESSION_TYPE") == "wayland"
+        or (bool(os.environ.get("WAYLAND_DISPLAY")) and not os.environ.get("DISPLAY"))
+    )
 
 
 class App:
@@ -55,6 +67,8 @@ class App:
         self.pool = QThreadPool.globalInstance()
         self._ocr: OCRBackend | None = None
         self._translator: TranslateBackend | None = None
+        self._model_dl_worker = None  # in-flight Argos download; ref keeps the C++ QRunnable alive
+        self._model_dl_busy = False
         self.history = HistoryWriter(self.cfg.history_keep_sessions, self.cfg.save_screenshots)
         # History writes (PNG encode + JSONL) run off the UI thread so showing a
         # result never stutters. Single worker = serialized, so HistoryWriter's
@@ -100,6 +114,15 @@ class App:
             self.hotkeys.start()
         except Exception as exc:
             self._notify("Hotkeys unavailable", f"{exc}\nUse the menu-bar icon instead.")
+        if _is_wayland():
+            # pynput's X11 backend receives zero events under a pure-Wayland session,
+            # so global hotkeys silently never fire. Tell the user to use the menu.
+            _log.warning("Wayland session detected — global hotkeys won't fire (X11/XWayland only)")
+            self._notify(
+                "Global hotkeys need X11",
+                "On Wayland the hold-to-translate key won't fire — use the tray menu's "
+                "“Translate full screen” instead (or run an X11/XWayland session).",
+            )
 
     # ---- OCR backend (lazily built, rebuilt when the source language changes) ----
     def _get_ocr(self) -> OCRBackend:
@@ -154,6 +177,56 @@ class App:
         import threading
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ---- offline model: offer to download when a language pair isn't installed ----
+    def _ensure_offline_model_async(self) -> None:
+        """When the offline engine is active, check that an Argos pack covers the
+        current source→target; if not, OFFER to download it now. On success the
+        translator is rebuilt so the new pack takes effect without an app restart.
+        Cheap + safe on the UI thread (lists installed packs; no torch import)."""
+        if self.cfg.translate_engine != "offline":
+            return
+        src, tgt = self.cfg.source, self.cfg.target
+        try:
+            if offline_models.model_installed(src, tgt):
+                return
+        except Exception:
+            pass  # can't tell -> fall through and offer the download
+        if self._model_dl_busy:
+            return  # a download is already running; don't stack prompts/dialogs
+        s, t = src.split("-")[0], tgt.split("-")[0]
+        answer = QtWidgets.QMessageBox.question(
+            None,
+            "Offline model",
+            f"No offline translation model for {s} → {t} is installed yet.\n\n"
+            "Download it now? (one-time, a few tens of MB)",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self._start_model_download(src, tgt)
+
+    def _start_model_download(self, src: str, tgt: str) -> None:
+        self._model_dl_busy = True
+        s, t = src.split("-")[0], tgt.split("-")[0]
+        self._notify("Offline model", f"Downloading {s}→{t}…")
+        worker = _ModelDownloadWorker(src, tgt, self.cfg.offline_model_dir)
+        self._model_dl_worker = worker  # keep a ref so the C++ QRunnable isn't GC'd
+        worker.signals.progress.connect(lambda m: _log.info("offline model: %s", m))
+        worker.signals.finished.connect(self._on_model_download_done)
+        self.pool.start(worker)
+
+    def _on_model_download_done(self, ok: bool, message: str) -> None:
+        self._model_dl_busy = False
+        self._model_dl_worker = None
+        self._notify("Offline model", message)
+        if ok and self.cfg.translate_engine == "offline":
+            # Rebuild the translator so the running Argos subprocess (which cached the
+            # old installed-package set) picks up the just-downloaded pack — no restart.
+            if self._translator is not None:
+                self._translator.close()
+                self._translator = None
+            self._warm_translator()
 
     # ---- "translating…" feedback (shown the instant a press is dispatched) ----
     def _show_loading(self, rect: QRect) -> None:
@@ -462,6 +535,8 @@ class App:
         self._rebuild_menu()
         if translator_changed:
             self._warm_translator()  # newly-selected offline engine: pre-load in the background
+        # If offline is active and the (possibly new) language pair has no pack, offer it.
+        self._ensure_offline_model_async()
 
     def _add_lang_actions(self, menu, langs, setter, current) -> None:
         group = QtGui.QActionGroup(menu)
@@ -479,10 +554,12 @@ class App:
         self.cfg.save()
         self._ocr = None  # source script may change which engine/hint we need
         # translator NOT reset: its cache is keyed by source, so one backend serves all
+        self._ensure_offline_model_async()  # offer to fetch the pack for the new pair
 
     def _set_target(self, code: str) -> None:
         self.cfg.target = code
         self.cfg.save()
+        self._ensure_offline_model_async()  # offer to fetch the pack for the new pair
 
     def _make_icon(self) -> QtGui.QIcon:
         pixmap = QtGui.QPixmap(64, 64)

@@ -50,6 +50,26 @@ def plan_packages(
     raise RuntimeError(f"No offline (Argos) language pack available for {src}→{tgt}.")
 
 
+def model_installed(src: str, tgt: str) -> bool:
+    """True if installed Argos packs already cover src→tgt (direct OR English pivot),
+    so the app can offer to download only when something is actually missing. Mirrors
+    `plan_packages`' routing. Returns False if argostranslate isn't importable yet.
+    Safe to call on the UI thread: it only lists installed packages (no model load)."""
+    s, t = _base(src), _base(tgt)
+    if s == "auto" or s == t:
+        return True  # nothing to translate/download
+    try:
+        # Import only `package` (Argos's pack manager), NOT `translate` — the latter
+        # pulls stanza/torch, which we must keep off this (UI) thread.
+        import argostranslate.package as pkg
+    except ImportError:
+        return False
+    pairs = {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}
+    if (s, t) in pairs:
+        return True
+    return s != "en" and t != "en" and (s, "en") in pairs and ("en", t) in pairs
+
+
 def argos_available() -> bool:
     try:
         import argostranslate.package  # noqa: F401
@@ -112,4 +132,16 @@ def download_model(
         path = by_pair[pair].download()
         log(f"Installing {pair[0]}→{pair[1]}…")
         pkg.install_from_path(path)
+
+    # Verify every wanted pack actually landed. A pivot pair (src→en, en→tgt) is
+    # installed in two steps; a mid-way failure would otherwise leave the route
+    # half-built and translation silently broken. Raising here keeps the caller's
+    # non-zero exit / error reporting honest.
+    have = {(p.from_code, p.to_code) for p in pkg.get_installed_packages()}
+    missing = [p for p in wanted if p not in have]
+    if missing:
+        raise RuntimeError(
+            "Offline model install incomplete: "
+            + ", ".join(f"{a}→{b}" for a, b in missing)
+        )
     log("✓ Offline model ready.")

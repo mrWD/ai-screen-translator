@@ -7,8 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A hotkey-driven screen OCR + translation overlay (games / films / anything on
 screen): **hold a key → capture the screen → OCR → translate → overlay**, with
 every result saved to disk for review/copy after the game closes. Python +
-PySide6 menu-bar app. Developed and exercised only on **macOS (Apple Silicon,
-Python 3.12)**; cross-platform is a design goal but not yet tested.
+PySide6 menu-bar app. Developed and exercised on **macOS (Apple Silicon, Python
+3.12)** — the primary, tested target. Windows/Linux are now wired up end-to-end
+(RapidOCR instead of Vision, mss instead of Quartz, X11 hotkeys) and pass the
+simulated-non-darwin checks, but are **not yet validated on real hardware**.
 
 `README.md` (user-facing) and `HANDOFF.md` (deep design notes, gotchas, open
 items) are kept current — read both before substantial work.
@@ -32,8 +34,10 @@ runs `./run.sh` for the interactive flow (region select, overlay over a game, re
 hotkeys). That last step is the standing feedback loop — the GUI/capture/hotkey path can only be
 validated by the user on the real machine.
 
-To enable the Cyrillic/cross-platform OCR engine, uncomment `rapidocr-onnxruntime`
-in `requirements.txt` and reinstall (see OCR routing below).
+`rapidocr-onnxruntime` (the cross-platform OCR engine) **auto-installs off macOS**
+via a `; sys_platform != "darwin"` marker in `requirements.txt` — it's the only OCR
+backend on Windows/Linux (Apple Vision is macOS-only). On macOS it's optional;
+install it by hand for a Vision fallback (see OCR routing below).
 
 ## Architecture
 
@@ -95,6 +99,11 @@ fixed devicePixelRatio when mapping OCR pixel coords back to the screen.** Deriv
 it from the actual returned image size vs. the logical region:
 `scale = captured_image_size / logical_region_size` (see `pipeline.compute_scale`
 / `pipeline.map_block`, called from `jobs.ScreenJob.run`).
+**`_grab_mss` must scale the region coords by `region.dpr` off macOS** (`scale =
+1.0 if darwin else region.dpr`): mss wants **physical** pixels on Windows/Linux, so
+passing logical points straight through truncates the capture on any display scaled
+>100% (common on Windows). macOS keeps mss at 1× (it's only the Quartz fallback
+there). `compute_scale` still self-calibrates from the returned image afterwards.
 Assuming dpr=2 once put translations at half-height. `_display_id_for_region`
 picks the display under the region; `CGDisplayCreateImageForRect`'s rect is in
 that display's **local** space, so `_grab_quartz` subtracts the display's bounds
@@ -104,11 +113,21 @@ so don't call `capture.grab` in headless checks; it only works inside the runnin
 app (or a real GUI session).
 
 **Translation routing (`translate.py`).** Mirrors the OCR plugin: backends behind
-`make_translator(engine, ...)` — `GoogleFreeBackend` (free, default, no key) and
-`ArgosBackend` (offline, optional dep). The base class centralizes the empty-text
-guard, the (source,target,text) cache, and the `TranslateError` contract. An
-**explicit** engine is built as-is so its failure surfaces; `auto` prefers Google,
-then offline. Like OCR, the backend is built lazily on the **UI thread**
+`make_translator(engine, ...)` — `GoogleFreeBackend` (free, no key, needs network)
+and `ArgosBackend` (offline, on-device). **Offline is now the default engine**
+(`Config.translate_engine="offline"`), so `argostranslate` is a hard requirement
+(`requirements.txt`, not optional anymore) and the setup scripts download the en→ru
+pack at install (`screen_translator.download_offline`). Changing source/target in
+the UI calls `App._ensure_offline_model_async`, which checks
+`offline_models.model_installed` (lists installed packs only — no torch import, UI-
+thread-safe) and, if the pair has no pack, OFFERS to download it
+(`_ModelDownloadWorker` off-thread), then rebuilds the translator so the new pack
+applies without an app restart. Missing-model at translate time still surfaces a
+clear `TranslateError` (see `argos_proc._require_route`) instead of a blank overlay. The base class centralizes
+the empty-text guard, the (source,target,text) cache, and the `TranslateError`
+contract. An **explicit** engine is built as-is so its failure surfaces; `auto`
+(only used by the legacy `translate()` helper, not the app) prefers Google, then
+offline. Like OCR, the backend is built lazily on the **UI thread**
 (`_get_translator`), reset to `None` on engine/model-dir change, and the
 **instance is passed into the worker job** — never call a module global from the
 `QRunnable`. Unlike OCR it is **not** reset on a source change: its cache is keyed
@@ -138,6 +157,10 @@ fast-supported `vision_code`, so `make_ocr` never routes them to RapidOCR; a
 Vision bboxes are normalized 0–1, **origin bottom-left** → flip Y with
 `(1 - y - h) * H`. The OCR backend is lazily built and reset to `None` whenever the
 source language, engine, or `ocr_fast` changes.
+**Off macOS** there is no Vision: `make_ocr('auto', …)` routes to RapidOCR (which
+auto-installs there) and `make_ocr` skips `vision` entirely on non-darwin, so it
+never returns a broken backend. `Config.load` also coerces a macOS-origin
+`ocr_engine="vision"` back to `"auto"` when loaded on Windows/Linux.
 
 **Hotkeys (`hotkeys.py`).** Exactly **one** pynput `Listener` drives both chord
 hotkeys (pynput `HotKey` objects) and the hold key. Two listeners segfault macOS
@@ -181,6 +204,14 @@ arrive as system events it can't catch). Windows `win32_event_filter`: runs
 *before* `on_press` and suppressing skips it, so the filter dispatches the action
 itself (off `data.vkCode`, with auto-repeat de-dup) then returns `False`. Only
 single, modifier-free keys qualify (`_build_suppress_tables`); chords pass through.
+**Linux has no suppression hook** (pynput offers `darwin_intercept`/`win32_event_filter`
+only) — it's a silent no-op, so the Settings checkbox is disabled there.
+**Cross-platform hotkey caveats:** the `from pynput import keyboard` import is wrapped
+so a broken pynput surfaces via `start()` (caught by `App._setup_hotkeys`) instead of
+crashing app import. The macOS-only bits (`_patch_darwin_keycode_context`, the event-tap
+watchdog, accessibility) all early-return off darwin. On **Linux Wayland** pynput's X11
+listener receives no events, so global hotkeys silently never fire — `App._is_wayland()`
+detects it and notifies the user to use the tray menu instead.
 
 **Scope.** Full-screen (hold-to-show) is the only translate mode. The earlier
 region/live modes — a saved-region single-shot translate and a `QTimer`-driven

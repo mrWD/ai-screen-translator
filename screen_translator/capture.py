@@ -6,7 +6,9 @@ mss, which only captures at 1x on macOS. Elsewhere (and as a fallback) we use ms
 
 Coordinates passed in are LOGICAL (Qt) points. Callers that map OCR coordinates
 back to the screen must derive the real scale from the returned image size vs. the
-logical region, NOT assume a fixed devicePixelRatio.
+logical region, NOT assume a fixed devicePixelRatio. The mss path scales those
+logical points to physical pixels by region.dpr on Windows/Linux (where mss expects
+physical coords); see _grab_mss.
 
 Known limits:
 - macOS needs Screen Recording permission (System Settings > Privacy & Security).
@@ -41,11 +43,20 @@ def grab(region: Region) -> Image.Image:
 
 
 def _grab_mss(region: Region) -> Image.Image:
+    # mss works in PHYSICAL pixels on Windows/Linux, but the region arrives in
+    # LOGICAL (Qt) points. On a display scaled above 100% (very common on Windows:
+    # 125/150/200%) passing logical coords straight through grabs the wrong, often
+    # truncated, area — so scale by the captured display's devicePixelRatio (carried
+    # on Region for exactly this). On macOS the primary path is Quartz; mss is only a
+    # fallback there and uses point coords, so we leave it at 1x (historical
+    # behavior). pipeline.compute_scale then derives the true scale from the returned
+    # image size vs. the logical region, so overlay mapping stays correct either way.
+    scale = 1.0 if sys.platform == "darwin" else (region.dpr or 1.0)
     monitor = {
-        "left": int(round(region.x)),
-        "top": int(round(region.y)),
-        "width": max(1, int(round(region.w))),
-        "height": max(1, int(round(region.h))),
+        "left": int(round(region.x * scale)),
+        "top": int(round(region.y * scale)),
+        "width": max(1, int(round(region.w * scale))),
+        "height": max(1, int(round(region.h * scale))),
     }
     try:
         with mss.mss() as sct:
