@@ -1,10 +1,8 @@
-"""Translucent, always-on-top, click-through panel that shows the translation
-just below (or above) the original text. Click-through (Qt.WindowTransparentForInput)
-means mouse/keyboard pass straight to the game underneath.
-
-The panel is anchored ADJACENT to the captured region, never over it, so live
-mode can keep re-capturing the same region without grabbing our own translation
-(which would create an OCR feedback loop) and the original text stays visible.
+"""Translucent, always-on-top, click-through panel — used for the small
+"⏳ Translating…" indicator shown near the cursor while a full-screen translation
+runs. Click-through (Qt.WindowTransparentForInput) means mouse/keyboard pass
+straight to the game underneath; it floats over fullscreen Spaces via the same
+NSWindow tweak as the full-screen overlay (see macos.make_overlay_join_all_spaces).
 """
 
 from __future__ import annotations

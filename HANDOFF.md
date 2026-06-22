@@ -8,19 +8,21 @@ can continue this project. Read this + `README.md` + the code, then continue.
 ## What it is
 
 A hotkey-driven screen OCR + translation overlay for games / films / anything
-on screen. User presses a hotkey → the foreign text on screen is translated and
-shown **in place** over the original. Everything is also **saved to disk** so the
-user can review (and select/copy) original + translation **after closing the game**.
+on screen. User **holds a key** → the whole screen is OCR'd, translated, and each
+translation drawn in a box over the original, **while held**. Everything is also
+**saved to disk** so the user can review (and select/copy) original + translation
+**after closing the game**.
 
-Original use case (the bar to meet):
+Use case (the bar to meet):
 1. User plays a game / watches a film.
-2. Sees foreign text, presses a hotkey.
-3. Translation appears in place of the foreign text.
-4. The screen with text is saved to disk, openable AFTER closing the game.
+2. Sees foreign text, holds the full-screen key (default F6).
+3. Translations appear over the foreign text while held; release to hide.
+4. The screen + text is saved to disk, openable AFTER closing the game.
 5. User can see ORIGINAL + TRANSLATION and SELECT/COPY the text.
 
-All five are implemented. Translation is pluggable — free Google (no API key) is
-the default, with an optional offline Argos backend.
+Translation is pluggable — free Google (no API key) is the default, with an
+optional offline Argos backend. (Region/part-of-screen + live modes were removed;
+full-screen hold is the only translate mode now.)
 
 ---
 
@@ -43,23 +45,19 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 | Hotkey | Action |
 |---|---|
-| `Cmd+Shift+T` | Translate the saved region once (panel appears beside it) |
-| `Cmd+Shift+F` | Translate the whole screen, in place |
-| Right Option `⌥` (hold) | Show whole-screen translation **while held**, hide on release |
-| `Cmd+Shift+L` | Toggle live mode (auto re-translate the region on change) |
-| `Cmd+Shift+R` | Re-select the region |
-| `Cmd+Shift+H` | Hide overlays |
+| `F6` (hold) | Translate the whole screen **while held**, hide on release |
+| `Cmd+Shift+H` | Hide the overlay |
 
 - **Menu**: a `Translator` menu (top-left menu bar) + tray icon `文`. Items:
-  Translate now / Translate full screen / Live mode / Select region / Hide /
-  Copy last result / Open translation log / Open history folder / Source &
-  Target language / Settings / Quit.
-- **Settings dialog**: languages, Fast OCR, translation engine + offline-model
+  Translate full screen / Hide overlay / Copy last result / Open translation log /
+  Open history folder / Source & Target language / Settings / Quit.
+- **Settings dialog**: languages (25), Fast OCR, translation engine + offline-model
   download, overlay font/opacity, save_history/save_screenshots, Suppress, and
-  **click-to-record hotkeys** (press a key; single keys like F6 work, chords too).
-  Some config fields are deliberately NOT exposed (kept at safe defaults):
-  `ocr_engine` (auto routes correctly), `live_interval_ms`, `accessory_mode` (always
-  on — a footgun as a toggle); `overlay_inplace` and the DeepL backend were removed.
+  **click-to-record hotkeys** for the hold + hide keys (single keys like F6 work,
+  chords too). Some config fields are deliberately NOT exposed (kept at safe
+  defaults): `ocr_engine` (auto routes correctly), `accessory_mode` (always on — a
+  footgun as a toggle). The region/live modes, `overlay_inplace`, and the DeepL
+  backend were removed.
 - **History**: every capture → `~/Library/Application Support/ai-screen-translator/history/<session>/session.jsonl` (+ downscaled screenshot PNG). "Open translation log" builds `index.html` (original|translation pairs, selectable/copyable, works with the app closed).
 
 ---
@@ -68,11 +66,11 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 - `app.py` — tray/menu UI shell + wiring. Hold-mode handlers, history persistence,
   settings apply, hotkey setup, menu building. Delegates the heavy lifting:
-  - `jobs.py` — worker `QRunnable`s (`Job` region/live, `ScreenJob` full-screen) run
-    OCR+translate off the UI thread and emit results via signals. `ScreenJob` fans
-    per-block translate calls out concurrently (bounded executor; lock-guarded cache).
-  - `pipeline.py` — pure, Qt-free logic the jobs call (scale/box mapping, junk
-    filter, dedup, colour sampling). Unit-tested in `tests/`.
+  - `jobs.py` — `ScreenJob` (full-screen) runs OCR+translate off the UI thread and
+    emits results via signals. It fans per-block translate calls out concurrently
+    (bounded executor; lock-guarded cache), or one batched call for Argos.
+  - `pipeline.py` — pure, Qt-free logic the job calls (scale/box mapping, junk
+    filter). Unit-tested in `tests/`.
   - `gating.py` — `BusyGate`, the single-in-flight (`gate.busy`) + hold-retry state
     machine. Unit-tested in `tests/`.
 - `capture.py` — screen capture. **macOS: native Quartz** `CGDisplayCreateImageForRect`
@@ -82,9 +80,8 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 - `translate.py` — pluggable: `GoogleFreeBackend` / `ArgosBackend`
   behind `make_translator`, mirroring `ocr.make_ocr`. Per-backend (source,target,text)
   cache + uniform `TranslateError`. Module-level `translate()` kept for the smoke test.
-- `region_selector.py` — drag-to-select region (frameless top-most overlay).
-- `overlay.py` — region-mode translucent click-through panel, anchored BESIDE the
-  region (never over it → no self-capture feedback loop).
+- `overlay.py` — the small "⏳ Translating…" indicator panel (click-through),
+  shown near the cursor while a full-screen translate runs.
 - `screen_overlay.py` — full-screen click-through overlay; translucent boxes
   grow-to-fit + de-overlap, drawn over the text.
 - `hotkeys.py` — **single** pynput Listener driving chord HotKeys + hold key.
@@ -129,15 +126,12 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 - **GeForce Now works** (it's a composited window). **DRM video = black frame** by
   design (unfixable). **True exclusive-fullscreen games** bypass the overlay → tell
   the user to switch to Borderless. The app detects all-black and messages it.
-- **Accessory mode** (`accessory_mode`, **default ON**) sets
+- **Accessory mode** (`accessory_mode`, **default ON**, no UI toggle) sets
   `NSApplicationActivationPolicyAccessory` (no Dock icon / app menu — tray only).
   Default on because a **Regular (Dock) app switches Spaces** when it orders a window
   front, so the full-screen overlay would appear on the Desktop Space instead of over
   a GeForce Now game's fullscreen Space — an accessory app floats over it in place.
-  Accessory apps don't get keyboard focus for a frameless overlay, so
-  `_selector_focus_acquire/release` briefly restore Regular policy + `activate_app()`
-  around region selection (restored on BOTH the selected and cancelled paths).
-  Applied at launch; toggling asks for a relaunch.
+  Applied at launch.
 - **History JSONL had silently broken**: the `session.jsonl` write had drifted into
   dead code after a `return` in `HistoryWriter._downscaled`, so nothing was logged
   (screenshots saved, but "Open translation log" was always empty). Fixed — the write
@@ -161,10 +155,8 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 
 **Implemented since the last handoff — need live confirmation on the real machine:**
 - **Multi-display capture** — `capture._display_id_for_region` picks the display under
-  the region (was `CGMainDisplayID()` only). Verify on a real two-display rig.
-- **Accessory mode** — now **default ON** (no Settings toggle). VERIFY the region
-  selector still gets keyboard focus (Esc to cancel + mouse drag), via
-  `_selector_focus_acquire/release` which briefly flips back to Regular.
+  the cursor (was `CGMainDisplayID()` only). Verify on a real two-display rig.
+- **Accessory mode** — **default ON**, no UI toggle. App is always menu-bar-only.
 - **Offline translation** — Argos (needs an Argos pack + an explicit source).
   **Settings → Offline model → Download** (`offline_models.download_model`, run on a
   `QRunnable` so the modal dialog stays responsive) pip-installs argostranslate if

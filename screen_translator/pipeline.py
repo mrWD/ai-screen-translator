@@ -2,9 +2,9 @@
 
 Everything here is plain Python (no Qt, no widgets) so it can be unit-tested
 headlessly. These are exactly the spots that have bitten us before — the
-image→screen scale (assuming dpr=2 once put translations at half height), the
-macOS menu-bar strip filter, and the live-mode dedup decision — so they live in
-one tested place instead of being inlined in the QRunnables.
+image→screen scale (assuming dpr=2 once put translations at half height) and the
+macOS menu-bar strip filter — so they live in one tested place instead of being
+inlined in the QRunnable.
 """
 
 from __future__ import annotations
@@ -46,20 +46,3 @@ def is_junk_block(x: int, y: int, w: int, h: int, geom_y: int, is_macos: bool) -
     if is_macos and geom_y == 0 and y < _MENU_BAR_H:
         return True
     return False
-
-
-def dedup_outcome(text: str, last_text: "str | None") -> str:
-    """Decide what a finished region OCR means, given the previous OCR text.
-
-    `text` must already be stripped. `last_text` is None for a single-shot press
-    (always translate) or the previous OCR text in live mode (dedup). Returns:
-      - "no_text":   nothing recognised, single-shot  -> show "(no text found)"
-      - "vanished":  nothing recognised, live mode     -> keep the existing panel
-      - "unchanged": same text as last time, live mode -> don't re-translate
-      - "translate": real new text                     -> translate it
-    """
-    if not text:
-        return "no_text" if last_text is None else "vanished"
-    if last_text is not None and text == last_text:
-        return "unchanged"
-    return "translate"

@@ -2,9 +2,9 @@
 hotkeys. Returns a new Config; the app applies and persists it.
 
 Some config fields are intentionally NOT exposed here (kept at safe defaults):
-`ocr_engine` (always "auto" — it routes correctly), `live_interval_ms`, and
-`accessory_mode` (kept ON so the overlay floats over fullscreen games — exposing
-it as a toggle was a footgun)."""
+`ocr_engine` (always "auto" — it routes correctly) and `accessory_mode` (kept ON
+so the overlay floats over fullscreen games — exposing it as a toggle was a
+footgun)."""
 
 from __future__ import annotations
 
@@ -111,13 +111,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._save_screenshots.setChecked(cfg.save_screenshots)
         form.addRow("", self._save_screenshots)
 
-        self._hk_translate = HotkeyEdit(cfg.hotkey_translate)
         self._hk_hold = HotkeyEdit(cfg.hotkey_hold)
-        self._hk_reselect = HotkeyEdit(cfg.hotkey_reselect)
         self._hk_hide = HotkeyEdit(cfg.hotkey_hide)
-        form.addRow("Hotkey: translate region", self._hk_translate)
         form.addRow("Full screen: HOLD to show", self._hk_hold)
-        form.addRow("Hotkey: reselect", self._hk_reselect)
         form.addRow("Hotkey: hide", self._hk_hide)
         hint = QtWidgets.QLabel(
             "Click a field and press the key(s). Single keys like F6 work. "
@@ -172,9 +168,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._offline_status.setText(msg)
 
     def result_config(self) -> Config:
-        """A new Config reflecting the edits (region and anything else preserved)."""
-        # Fields not in the dialog (ocr_engine, live_interval_ms, accessory_mode,
-        # hotkey_live) are preserved from self._cfg by replace().
+        """A new Config reflecting the edits (everything else preserved)."""
+        # Fields not in the dialog (ocr_engine, accessory_mode) are preserved from
+        # self._cfg by replace().
         return replace(
             self._cfg,
             source=self._source.currentData() or self._cfg.source,
@@ -185,9 +181,7 @@ class SettingsDialog(QtWidgets.QDialog):
             overlay_opacity=round(self._opacity.value(), 2),
             save_history=self._save_history.isChecked(),
             save_screenshots=self._save_screenshots.isChecked(),
-            hotkey_translate=self._hk_translate.hotkey() or self._cfg.hotkey_translate,
             hotkey_hold=self._hk_hold.hotkey() or self._cfg.hotkey_hold,
-            hotkey_reselect=self._hk_reselect.hotkey() or self._cfg.hotkey_reselect,
             hotkey_hide=self._hk_hide.hotkey() or self._cfg.hotkey_hide,
             suppress_hotkeys=self._suppress.isChecked(),
         )

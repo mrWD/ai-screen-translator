@@ -1,9 +1,8 @@
-"""Off-the-UI-thread workers: OCR + network translation as QRunnables.
+"""Off-the-UI-thread worker: full-screen OCR + translation as a QRunnable.
 
-These run on the global QThreadPool and report back via Qt Signals delivered on
-the UI thread. All the framework-free decision logic (scale, block mapping, junk
-filter, dedup) lives in `pipeline`; these classes are just the
-Qt/threading shell around it.
+`ScreenJob` runs on the global QThreadPool and reports back via Qt Signals
+delivered on the UI thread. The framework-free decision logic (scale, block
+mapping, junk filter) lives in `pipeline`; this is just the Qt/threading shell.
 
 Keep a Python ref to a running job in the caller — QThreadPool only stores a C++
 pointer, so a GC'd wrapper would tear down its C++ object mid-run.
@@ -27,47 +26,6 @@ _log = logging.getLogger(__name__)
 # we never hammer a rate-limited endpoint, and dropped to 1 for backends that
 # aren't safe to call concurrently (see TranslateBackend.parallel_safe).
 _MAX_TRANSLATE_WORKERS = 8
-
-
-class _JobSignals(QObject):
-    done = Signal(str, object, str)  # translated text, region QRect, ocr text
-    unchanged = Signal()             # live mode: OCR text same as last -> no-op
-    failed = Signal(str)
-
-
-class Job(QRunnable):
-    """Runs OCR + translation off the UI thread (translation hits the network).
-
-    In live mode (`last_text` is not None) it short-circuits when the OCR'd text
-    matches the last result, so we never re-translate or churn the overlay on an
-    unchanged line even while the game's background animates."""
-
-    def __init__(self, ocr, image, region_rect: QRect, source, target, last_text, translator) -> None:
-        super().__init__()
-        self.signals = _JobSignals()
-        self._ocr = ocr
-        self._translator = translator
-        self._image = image
-        self._region_rect = region_rect
-        self._source = source
-        self._target = target
-        self._last_text = last_text  # None in single-shot -> always translate
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            text = self._ocr.recognize(self._image, self._source).strip()
-            outcome = pipeline.dedup_outcome(text, self._last_text)
-            if outcome == "no_text":
-                self.signals.done.emit("(no text found)", self._region_rect, "")
-                return
-            if outcome in ("vanished", "unchanged"):
-                self.signals.unchanged.emit()
-                return
-            translated = self._translator.translate(text, self._source, self._target)
-            self.signals.done.emit(translated, self._region_rect, text)
-        except Exception as exc:  # surfaced to the user via the tray
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 class _ScreenJobSignals(QObject):

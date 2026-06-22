@@ -13,17 +13,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6 import QtGui, QtWidgets
-from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtCore import QRect, Qt, QThreadPool, QTimer, QUrl
 
-from . import capture, changes, languages, log
+from . import capture, languages, log
 from .config import Config, Region, history_dir
 from .gating import BusyGate
 from .history import HistoryWriter, build_index
 from .hotkeys import HotkeyManager
-from .jobs import Job, ScreenJob
+from .jobs import ScreenJob
 from .ocr import OCRBackend, make_ocr
 from .overlay import Overlay
-from .region_selector import RegionSelector
 from .screen_overlay import ScreenOverlay
 from .settings_dialog import SettingsDialog
 from .translate import TranslateBackend, make_translator
@@ -44,15 +43,14 @@ class App:
 
         self.cfg = Config.load()
         _log.info(
-            "config: src=%s tgt=%s ocr=%s translate=%s suppress=%s accessory=%s region=%s",
+            "config: src=%s tgt=%s ocr=%s translate=%s fast_ocr=%s suppress=%s accessory=%s",
             self.cfg.source, self.cfg.target, self.cfg.ocr_engine,
-            self.cfg.translate_engine, self.cfg.suppress_hotkeys,
-            self.cfg.accessory_mode, "set" if self.cfg.region else "none",
+            self.cfg.translate_engine, self.cfg.ocr_fast, self.cfg.suppress_hotkeys,
+            self.cfg.accessory_mode,
         )
         _log.info(
-            "hotkeys: translate=%s hold(full screen)=%s reselect=%s hide=%s live=%s",
-            self.cfg.hotkey_translate, self.cfg.hotkey_hold or "(none)",
-            self.cfg.hotkey_reselect, self.cfg.hotkey_hide, self.cfg.hotkey_live,
+            "hotkeys: hold(full screen)=%s hide=%s",
+            self.cfg.hotkey_hold or "(none)", self.cfg.hotkey_hide,
         )
         self.pool = QThreadPool.globalInstance()
         self._ocr: OCRBackend | None = None
@@ -62,7 +60,6 @@ class App:
         # result never stutters. Single worker = serialized, so HistoryWriter's
         # _seq/_session_dir stay race-free.
         self._history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history")
-        self._last_capture_image = None  # most recent region/live frame (for history)
         self._last_fs_image = None       # most recent full-screen frame (for history)
         self._last_result = None         # (original, translation) for "Copy last result"
         self._fs_is_hold = False         # current full-screen request came from the hold key
@@ -77,23 +74,9 @@ class App:
         self.gate = BusyGate()
         self._current_job = None
 
-        # Live mode: periodically re-capture the saved region and re-translate
-        # only when its content changes.
-        self._live_on = False
-        self._last_sig = None        # last frame signature (cheap frozen-frame skip)
-        self._last_ocr_text = None   # last OCR'd text (real change gate in live mode)
-        self._enable_live_after_select = False
-        self._live_timer = QTimer()
-        self._live_timer.timeout.connect(self._live_tick)
-
-        self.overlay = Overlay(self.cfg.overlay_font_pt, self.cfg.overlay_opacity)
+        self.overlay = Overlay(self.cfg.overlay_font_pt, self.cfg.overlay_opacity)  # loading indicator
         self.screen_overlay = ScreenOverlay(self.cfg.overlay_opacity)
         self._fs_screen = None  # screen targeted by the in-flight full-screen job
-        self.selector = RegionSelector()
-        self.selector.selected.connect(self._on_region_selected)
-        self.selector.cancelled.connect(self._on_select_cancelled)
-        self.selector.closed.connect(self._selector_focus_release)  # restore policy on any dismissal
-        self._focus_bracketed = False  # accessory: was the selection bracket applied?
 
         self._build_tray()
         self._setup_hotkeys()
@@ -106,17 +89,11 @@ class App:
         if getattr(self, "hotkeys", None) is not None:
             self.hotkeys.stop()  # stop the old listener thread before replacing it
         self.hotkeys = HotkeyManager(
-            self.cfg.hotkey_translate,
-            self.cfg.hotkey_reselect,
             self.cfg.hotkey_hide,
-            self.cfg.hotkey_live,
             self.cfg.hotkey_hold,
             self.cfg.suppress_hotkeys,
         )
-        self.hotkeys.translate.connect(self.translate_now)
-        self.hotkeys.reselect.connect(self.reselect_region)
         self.hotkeys.hide.connect(self._hide_overlays)
-        self.hotkeys.live.connect(self.toggle_live)
         self.hotkeys.hold_start.connect(self._on_hold_start)
         self.hotkeys.hold_end.connect(self._on_hold_end)
         try:
@@ -236,166 +213,13 @@ class App:
             "nothing.",
         )
 
-    def _selector_focus_acquire(self) -> None:
-        """Accessory apps can't make a frameless overlay the key window, so briefly
-        become a Regular foreground app while the region selector is up — otherwise
-        the selector gets no keyboard focus (Esc to cancel) or mouse drag."""
-        # Decide once, here, so a mid-selection Settings toggle can't unbalance the
-        # acquire/release pair (release acts only on this captured flag).
-        self._focus_bracketed = bool(self.cfg.accessory_mode and self._cocoa())
-        if not self._focus_bracketed:
-            return
-        try:
-            from . import macos
-
-            macos.set_activation_policy(False)  # Regular
-            macos.activate_app()
-        except Exception:
-            pass
-
-    def _selector_focus_release(self) -> None:
-        if not self._focus_bracketed:
-            return
-        self._focus_bracketed = False
-        if not self._cocoa():
-            return
-        try:
-            from . import macos
-
-            macos.set_activation_policy(True)  # back to Accessory
-        except Exception:
-            pass
-
-    # ---- actions ----
-    def translate_now(self) -> None:
-        _log.info("translate_now (busy=%s region=%s)", self.gate.busy, bool(self.cfg.region))
-        if self.gate.busy:
-            return  # a translation is already in flight
-        if self.cfg.region is None:
-            self.reselect_region()
-            return
-        self.overlay.hide()
-        # let the overlay actually disappear before we grab the screen
-        QTimer.singleShot(60, self._capture_and_dispatch)
-
-    def _capture_and_dispatch(self) -> None:
-        region = self._region_with_live_dpr(self.cfg.region)
-        rect = QRect(region.x, region.y, region.w, region.h)
-        try:
-            image = capture.grab(region)
-        except Exception as exc:
-            self._notify("Capture failed", str(exc))
-            return
-
-        if capture.is_black(image):
-            self.overlay.show_text(
-                "⚠️ Black frame. Grant Screen Recording permission, or this is "
-                "DRM-protected / exclusive-fullscreen content (switch the game to "
-                "Borderless Windowed).",
-                rect,
-            )
-            return
-
-        self._last_sig = changes.signature(image)  # seed the live-mode baseline
-        self._dispatch(image, rect, dedup=False)  # explicit press always shows
-        self._show_loading(rect)  # instant feedback while OCR + translate run off-thread
-
-    def _dispatch(self, image, rect: QRect, dedup: bool) -> None:
-        try:
-            ocr = self._get_ocr()
-        except Exception as exc:
-            self._notify("OCR unavailable", str(exc))
-            return
-        try:
-            translator = self._get_translator()
-        except Exception as exc:
-            self._notify("Translation unavailable", str(exc))
-            return
-        self._last_capture_image = image  # kept for history persistence in _on_job_done
-        last_text = self._last_ocr_text if dedup else None
-        job = Job(ocr, image, rect, self.cfg.source, self.cfg.target, last_text, translator)
-        job.signals.done.connect(self._on_job_done)
-        job.signals.unchanged.connect(self._on_job_unchanged)
-        job.signals.failed.connect(self._on_job_failed)
-        self._current_job = job
-        self.gate.try_start()
-        self.pool.start(job)
-
-    # ---- live mode ----
-    def toggle_live(self) -> None:
-        if self._live_on:
-            self._stop_live()
-            return
-        if self.cfg.region is None:
-            self._enable_live_after_select = True
-            self.reselect_region()
-            return
-        self._start_live()
-
-    def _start_live(self) -> None:
-        self._live_on = True
-        self._last_sig = None
-        self._last_ocr_text = None
-        self._live_timer.setInterval(max(200, self.cfg.live_interval_ms))
-        self._live_timer.start()
-        self._update_live_action()
-        self._notify("Live mode ON", "Auto-translating the selected region.")
-
-    def _stop_live(self) -> None:
-        self._live_on = False
-        self._live_timer.stop()
-        self._update_live_action()
-        self._notify("Live mode OFF", "")
-
-    def _live_tick(self) -> None:
-        if self.gate.busy or self.cfg.region is None:
-            return
-        region = self._region_with_live_dpr(self.cfg.region)
-        try:
-            image = capture.grab(region)
-        except Exception:
-            return  # transient capture hiccup; try again next tick
-        if capture.is_black(image):
-            return
-        sig = changes.signature(image)
-        if not changes.changed(self._last_sig, sig):
-            return  # frame is essentially frozen — skip OCR entirely
-        self._last_sig = sig
-        self._dispatch(image, QRect(region.x, region.y, region.w, region.h), dedup=True)
-
-    def _region_with_live_dpr(self, region: Region) -> Region:
-        """Recompute devicePixelRatio from the screen under the region now, so a
-        region selected on one display still captures correctly if the content
-        later sits on a display with a different scale factor."""
-        screen = QtGui.QGuiApplication.screenAt(QPoint(region.x, region.y))
-        if screen is None:
-            return region
-        return Region(region.x, region.y, region.w, region.h, screen.devicePixelRatio())
-
+    # ---- full-screen capture/translate ----
     def _finish_job(self) -> None:
         self._current_job = None
         replay = self.gate.finish()  # a hold waited for this job and the key is still down
         _log.info("job finished (gate.busy now=%s, replay_hold=%s)", self.gate.busy, replay)
         if replay:
             QTimer.singleShot(0, lambda: self.translate_fullscreen(is_hold=True))
-
-    def _on_job_done(self, text: str, rect: QRect, ocr_text: str) -> None:
-        self._last_ocr_text = ocr_text  # commit dedup baseline before clearing busy
-        self._finish_job()
-        self._loading = False  # replaced in place by the real result below
-        self.overlay.show_text(text, rect)
-        if ocr_text.strip():
-            self._last_result = (ocr_text, text)
-            if self.cfg.save_history:
-                mode = "live" if self._live_on else "region"
-                self._history_pool.submit(
-                    self.history.add,
-                    [(ocr_text, text)], self._last_capture_image,
-                    self.cfg.source, self.cfg.target, self._ocr_name(), mode,
-                )
-
-    def _on_job_unchanged(self) -> None:
-        self._finish_job()  # live: nothing changed, leave the panel as-is
 
     def _on_job_failed(self, msg: str) -> None:
         _log.warning("job failed: %s", msg)
@@ -550,31 +374,6 @@ class App:
                 self._ocr_name(), "fullscreen",
             )
 
-    def reselect_region(self) -> None:
-        self.overlay.hide()
-        self._selector_focus_acquire()
-        try:
-            self.selector.start()
-        except Exception as exc:  # don't strand the app in Regular policy
-            self._selector_focus_release()
-            self._notify("Select region", str(exc))
-
-    def _on_region_selected(self, rect: QRect, dpr: float) -> None:
-        self._selector_focus_release()
-        self.cfg.region = Region(rect.x(), rect.y(), rect.width(), rect.height(), dpr)
-        self.cfg.save()
-        self._last_sig = None       # new region -> drop stale change/dedup state
-        self._last_ocr_text = None
-        if self._enable_live_after_select:
-            self._enable_live_after_select = False
-            QTimer.singleShot(150, self._start_live)
-        else:
-            QTimer.singleShot(150, self.translate_now)  # translate right after selecting
-
-    def _on_select_cancelled(self) -> None:
-        self._selector_focus_release()
-        self._enable_live_after_select = False
-
     # ---- menus ----
     def _build_tray(self) -> None:
         self.tray = QtWidgets.QSystemTrayIcon(self._make_icon())
@@ -590,7 +389,6 @@ class App:
         # Keep explicit Python refs to everything we create — PySide6's GC can
         # otherwise collect menu/group wrappers and tear down their C++ objects.
         self._lang_groups = []   # QActionGroups
-        self._live_actions = []  # "Live mode" checkable actions (kept in sync)
         self._submenus = []      # all QMenus (top + language submenus)
 
         if getattr(self, "_menu", None) is not None:
@@ -605,13 +403,7 @@ class App:
         self._populate_menu(top)
 
     def _populate_menu(self, menu) -> None:
-        menu.addAction("Translate now", self.translate_now)
         menu.addAction("Translate full screen", self.translate_fullscreen)
-        live = menu.addAction("Live mode", self.toggle_live)
-        live.setCheckable(True)
-        live.setChecked(self._live_on)
-        self._live_actions.append(live)
-        menu.addAction("Select region…", self.reselect_region)
         menu.addAction("Hide overlay", self._hide_overlays)
         menu.addAction("Copy last result", self.copy_last_result)
         menu.addSeparator()
@@ -629,10 +421,6 @@ class App:
         menu.addAction("Settings…", self.open_settings)
         menu.addSeparator()
         menu.addAction("Quit", self.quit)
-
-    def _update_live_action(self) -> None:
-        for action in getattr(self, "_live_actions", []):
-            action.setChecked(self._live_on)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.cfg)
@@ -660,14 +448,9 @@ class App:
         self.overlay.set_style(new.overlay_font_pt, new.overlay_opacity)
         self.screen_overlay.set_opacity(new.overlay_opacity)
         self.history.save_screenshots = new.save_screenshots
-        if self._live_on:
-            self._live_timer.setInterval(max(200, new.live_interval_ms))
         hotkeys_changed = (
-            new.hotkey_translate != old.hotkey_translate
-            or new.hotkey_hold != old.hotkey_hold
-            or new.hotkey_reselect != old.hotkey_reselect
+            new.hotkey_hold != old.hotkey_hold
             or new.hotkey_hide != old.hotkey_hide
-            or new.hotkey_live != old.hotkey_live
             or new.suppress_hotkeys != old.suppress_hotkeys
         )
         if hotkeys_changed:
@@ -725,7 +508,6 @@ class App:
             print(f"{title}: {message}", file=sys.stderr)
 
     def quit(self) -> None:
-        self._live_timer.stop()
         self.hotkeys.stop()
         if self._translator is not None:
             self._translator.close()  # don't leave the Argos subprocess running
@@ -735,7 +517,7 @@ class App:
     def run(self) -> int:
         self._notify(
             "AI Screen Translator",
-            f"Running in the menu bar. Press {self.cfg.hotkey_translate} to translate.",
+            f"Running in the menu bar. Hold {self.cfg.hotkey_hold} to translate the screen.",
         )
         return self.qt.exec()
 

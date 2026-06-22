@@ -79,15 +79,6 @@ def set_activation_policy(accessory: bool) -> None:
     )
 
 
-def activate_app() -> None:
-    """Force the process foreground so a frameless overlay can become key window
-    (the region selector needs keyboard focus, which Accessory apps don't get by
-    default)."""
-    from AppKit import NSApplication
-
-    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-
-
 def accessibility_trusted(prompt: bool = False) -> bool:
     """Whether this process is trusted for Accessibility — required for global
     hotkeys (the Quartz event tap only receives hardware key events when trusted;

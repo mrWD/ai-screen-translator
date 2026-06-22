@@ -113,28 +113,19 @@ def _patch_darwin_keycode_context() -> None:
 
 
 class HotkeyManager(QObject):
-    translate = Signal()
-    reselect = Signal()
     hide = Signal()
-    live = Signal()
     hold_start = Signal()
     hold_end = Signal()
 
     def __init__(
         self,
-        translate_hk: str,
-        reselect_hk: str,
         hide_hk: str,
-        live_hk: str,
         hold_hk: str,
         suppress: bool = False,
     ) -> None:
         super().__init__()
         self._chord_specs = [
-            (translate_hk, self._logged("translate region", self.translate.emit)),
-            (reselect_hk, self._logged("reselect", self.reselect.emit)),
             (hide_hk, self._logged("hide", self.hide.emit)),
-            (live_hk, self._logged("live toggle", self.live.emit)),
         ]
         self._hold_hk = hold_hk
         self._suppress_enabled = suppress

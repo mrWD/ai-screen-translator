@@ -1,9 +1,9 @@
 # AI Screen Translator
 
-Press a global hotkey while playing a game (or reading anything on screen) and a
-translation of the selected on-screen text appears in an overlay over it.
+Hold a key (default `F6`) while playing a game (or reading anything on screen) and
+a translation of the whole screen appears in an overlay over it, while held.
 
-**Pipeline:** hotkey → capture screen region → OCR → translate → overlay.
+**Pipeline:** hotkey → capture screen → OCR → translate → overlay.
 
 This is the v1 prototype: Python + PySide6, Apple Vision OCR on macOS, and the
 **free Google Translate** endpoint (no API key). It is architected so the OCR
@@ -44,45 +44,26 @@ You'll be prompted on first use; you may need to quit and relaunch after grantin
 1. Launch the app — a 文 icon appears in the menu bar.
 2. Pick **Source language** (what's on screen) and **Target language** (what you
    want) from the menu, or open **Settings…** to set everything at once.
-3. Press the **translate hotkey** (default `Cmd+Shift+T`). The first time it asks
-   you to **drag-select the region** where the game text appears (e.g. the
-   subtitle/dialogue box).
-4. After that, each press of `Cmd+Shift+T` re-captures that same region and shows
-   the translation in a panel just below it. A **⏳ Translating…** placeholder
-   appears instantly so you know it's working; it's replaced by the result when
-   OCR + translation finish (a network/first-offline call takes a moment). The
-   offline engine is pre-warmed in the background so its first translate is quick.
+3. **Hold `F6`** (default; reassignable): the *entire* screen is translated — it
+   OCRs every block of text and draws each translation in a translucent box over
+   the original, like Google Lens. The translation shows **only while you hold the
+   key** and disappears on release. A **⏳ Translating…** placeholder appears near
+   the cursor while OCR + translation run.
 
-**Live mode** (`Cmd+Shift+L`, or the menu): instead of pressing the hotkey for
-every line, the app watches the selected region and re-translates automatically
-whenever the text changes — ideal for subtitles / dialogue. It's efficient: it
-skips frozen frames and only re-translates when the OCR'd text actually changes
-(so an animated game background doesn't cause constant re-translation). The panel
-is anchored next to the region, not over it, so the original text stays visible.
-
-**Full-screen translation — hold `F6`** (reassignable; or **Translator → Translate
-full screen** in the menu for a one-off): translates the *entire* screen at once —
-it OCRs every block of text and draws each translation in a translucent box over
-the original, like Google Lens. Each box grows to fit its translation, overlapping
-boxes are nudged apart, and tiny/menu-bar noise is skipped. It shows **only while
-you hold the key** and disappears on release.
+Each box grows to fit its translation, overlapping boxes are nudged apart, and
+tiny/menu-bar noise is skipped. The offline engine is pre-warmed in the background
+so the first translate is quick.
 
 | Hotkey | Action |
 |---|---|
-| `Cmd+Shift+T` | Capture the saved region once, translate, show panel |
-| **`F6` (hold)** | Show the whole-screen translation **only while held** — release to hide |
-| `Cmd+Shift+L` | Toggle live (auto-translate) mode on the region |
-| `Cmd+Shift+R` | Re-select the region |
-| `Cmd+Shift+H` | Hide overlays |
+| **`F6` (hold)** | Translate the whole screen **only while held** — release to hide |
+| `Cmd+Shift+H` | Hide the overlay |
 
-Full-screen translation is **hold-to-show only**: hold the full-screen key
-(reassignable under **Full screen: HOLD to show** in Settings) and the translation
-stays only while you hold it — release to hide. There is no persistent full-screen
-hotkey. The menu item **Translator → Translate full screen** still does a one-off
-capture (it stays until you hide it) for when you can't hold a key.
+The menu item **Translator → Translate full screen** does a one-off capture that
+stays until you hide it (for when you can't hold a key).
 
 **Changing hotkeys:** open **Settings**, click a hotkey field, and press the
-key(s) you want — single keys (e.g. `F6`) work, as do chords like `Cmd+Shift+T`.
+key(s) you want — single keys (e.g. `F6`) work, as do chords like `Cmd+Shift+H`.
 Press `⌫` (Backspace) while recording to clear a field (disables that hotkey).
 
 **Global hotkeys need Accessibility** on macOS: the app prompts on first launch.
@@ -128,7 +109,7 @@ choice to expose.)
 
 **Suppress** (Settings) makes a single-key hotkey swallow its normal action — so
 binding e.g. F1 runs the translation *instead of* opening Help. Only single,
-modifier-free keys are affected (chords like `Cmd+Shift+T` always pass through).
+modifier-free keys are affected (chords like `Cmd+Shift+H` always pass through).
 On macOS it needs Accessibility permission, and the brightness/media keys
 (F1/F2/F7–F12 in their default mode) can't be intercepted — pick a plain function
 key, or enable “Use F1, F2 as standard function keys”.
@@ -169,10 +150,10 @@ Settings persist to:
 - Windows: `%APPDATA%\ai-screen-translator\config.json`
 
 Keys: `source`, `target`, `ocr_engine` (`auto`/`vision`/`rapidocr`), `ocr_fast`,
-`translate_engine` (`google`/`offline`), `offline_model_dir`, `region`,
-`hotkey_translate`, `hotkey_hold`, `hotkey_reselect`, `hotkey_hide`, `hotkey_live`,
-`suppress_hotkeys`, `live_interval_ms`, `overlay_font_pt`, `overlay_opacity`,
-`save_history`, `save_screenshots`, `history_keep_sessions`, `accessory_mode`.
+`translate_engine` (`google`/`offline`), `offline_model_dir`,
+`hotkey_hold`, `hotkey_hide`, `suppress_hotkeys`, `overlay_font_pt`,
+`overlay_opacity`, `save_history`, `save_screenshots`, `history_keep_sessions`,
+`accessory_mode`.
 
 ---
 
@@ -181,21 +162,19 @@ Keys: `source`, `target`, `ocr_engine` (`auto`/`vision`/`rapidocr`), `ocr_fast`,
 ```
 screen_translator/
   app.py             # tray/UI shell + wiring (hotkey→capture→OCR→translate→overlay)
-  jobs.py            # off-thread OCR+translate workers (QRunnables) on the thread pool
-  pipeline.py        # pure logic: scale/box mapping, junk filter, dedup, colour sampling
+  jobs.py            # off-thread full-screen OCR+translate worker (QRunnable)
+  pipeline.py        # pure logic: scale/box mapping, junk filter
   gating.py          # single-in-flight-job + hold-key-retry state machine (no Qt)
   config.py          # persisted settings
   capture.py         # screen capture: native Quartz (Retina 2x) on macOS, else mss
   hotkey_edit.py     # click-to-record hotkey field (Qt key -> pynput string)
-  changes.py         # frozen-frame detection (live-mode OCR skip)
   ocr.py             # pluggable OCR: Apple Vision / RapidOCR
   translate.py       # pluggable translation: Google free / offline Argos + cache
   offline_models.py  # one-click Argos install + language-pack download (Settings button)
   argos_proc.py      # offline-translation subprocess (keeps torch off the Qt worker thread)
-  region_selector.py # drag-to-select region UI
-  overlay.py         # region-mode translucent click-through panel, anchored beside the region
+  overlay.py         # "Translating…" indicator panel (click-through, floats over fullscreen)
   screen_overlay.py  # full-screen overlay: translucent boxes drawn over the text
-  settings_dialog.py # Settings dialog (languages, engines, hotkeys, interval, overlay)
+  settings_dialog.py # Settings dialog (languages, engines, hotkeys, overlay)
   hotkeys.py         # global hotkeys (pynput) bridged to Qt
   macos.py           # NSWindow tweaks (float over fullscreen) + activation policy
   languages.py       # language list for the UI

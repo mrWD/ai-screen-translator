@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A hotkey-driven screen OCR + translation overlay (games / films / anything on
-screen): **hotkey → capture screen region → OCR → translate → overlay**, with
+screen): **hold a key → capture the screen → OCR → translate → overlay**, with
 every result saved to disk for review/copy after the game closes. Python +
 PySide6 menu-bar app. Developed and exercised only on **macOS (Apple Silicon,
 Python 3.12)**; cross-platform is a design goal but not yet tested.
@@ -44,14 +44,14 @@ span files:
 **Orchestration & threading.** `App` (`app.py`) is the UI shell + wiring: it
 connects hotkeys/menu to the pipeline. The work is split across modules so the
 non-Qt logic is testable:
-- `jobs.py` — `Job` (region/live single-region translate, with live-mode dedup)
-  and `ScreenJob` (full-screen: OCR every block, translate each, map boxes to
-  screen). These `QRunnable`s run **off the UI thread** on the global
-  `QThreadPool`, reporting back via Qt `Signal`s. `ScreenJob` fans its per-block
-  translate calls out concurrently (bounded `ThreadPoolExecutor`); the translator
-  cache is lock-guarded and a backend opts out via `parallel_safe = False` (Argos).
-- `pipeline.py` — **pure, Qt-free** functions used by the jobs: `compute_scale`,
-  `map_block`, `is_junk_block`, `dedup_outcome`. Unit-tested.
+- `jobs.py` — `ScreenJob` (full-screen: OCR every block, translate each, map boxes
+  to screen). This `QRunnable` runs **off the UI thread** on the global
+  `QThreadPool`, reporting back via Qt `Signal`s. It fans its per-block translate
+  calls out concurrently (bounded `ThreadPoolExecutor`); the translator cache is
+  lock-guarded and a backend opts out via `parallel_safe = False` (Argos), which
+  routes to one batched `translate_batch` call instead.
+- `pipeline.py` — **pure, Qt-free** functions used by the job: `compute_scale`,
+  `map_block`, `is_junk_block`. Unit-tested.
 - `gating.py` — `BusyGate`, the single-in-flight-job + hold-retry **state machine**
   (no Qt). Unit-tested.
 
@@ -80,14 +80,12 @@ Because the result can arrive *after* the user releases the hold key,
 `_on_screen_done` shows a released-hold result anyway and auto-hides it after
 `_HOLD_LINGER_MS` (`_fs_linger`; cancelled by `_on_hold_end`/`_hide_overlays`/a new hold).
 
-**Perceived latency.** OCR + translate run off-thread, so on an *explicit* press
-the app shows a `⏳ Translating…` placeholder immediately (`_show_loading` /
-`_clear_loading`, tracked by `_loading`) — region in the panel, full-screen near
-the cursor — replaced in place by the result (`_on_job_done`) or hidden on
-failure/hold-release. Live ticks never show it. The offline (Argos) backend is
-**pre-warmed** in the background (`_warm_translator`, at launch and on engine
-switch) so its slow first call — subprocess spawn + model/torch load — happens
-before the user's first real translate, not during it.
+**Perceived latency.** OCR + translate run off-thread, so the app shows a
+`⏳ Translating…` placeholder near the cursor immediately after grab (`_show_loading`
+/ `_clear_loading`, tracked by `_loading`), hidden on result/failure/hold-release.
+The OCR backend (`ocrmac` import + a warm recognize) and the offline (Argos)
+backend are **pre-warmed** in the background (`_warm_translator`, at launch and on
+engine switch) so the slow first calls happen before the user's first real translate.
 
 **Capture coordinate self-calibration — the load-bearing invariant.** Capture
 takes **logical (Qt) point** coordinates. On macOS, `capture.grab` uses Quartz
@@ -127,14 +125,19 @@ argostranslate + the language pack lives in `offline_models.py` (`plan_packages`
 pivots through English when there's no direct pack; the download runs on a
 `QRunnable`).
 
-**OCR routing (`ocr.py`).** Pluggable backends behind `make_ocr(engine, source)`:
-`VisionOCR` (Apple Vision via `ocrmac`, macOS, default) and `RapidOCRBackend`
-(cross-platform ONNX, optional dep). Vision **cannot read Cyrillic** — `make_ocr`
-routes a Cyrillic source to RapidOCR and raises a clear "install rapidocr" error
-rather than ever silently falling back to Vision (which would return garbage).
+**OCR routing (`ocr.py`).** Pluggable backends behind `make_ocr(engine, source,
+fast=…)`: `VisionOCR` (Apple Vision via `ocrmac`, macOS, default) and
+`RapidOCRBackend` (cross-platform ONNX, optional dep). **Vision's supported
+languages depend on the level:** `fast` (default) covers ~30 incl. Cyrillic/CJK/
+Arabic/Thai; `accurate` only the six Latin (en/fr/it/de/es/pt). `VisionOCR` queries
+the supported set for its level and only passes a `language_preference` hint that's
+in it (else Vision auto-detects) — so `accurate` + a non-Latin source degrades
+gracefully instead of `ocrmac` raising. Every entry in `languages.py` has a
+fast-supported `vision_code`, so `make_ocr` never routes them to RapidOCR; a
+`vision_code=None` language would route to RapidOCR (optional dep) as a source.
 Vision bboxes are normalized 0–1, **origin bottom-left** → flip Y with
-`(1 - y - h) * H`. The OCR backend is lazily built and reset to `None` whenever
-the source language or engine changes, forcing a rebuild.
+`(1 - y - h) * H`. The OCR backend is lazily built and reset to `None` whenever the
+source language, engine, or `ocr_fast` changes.
 
 **Hotkeys (`hotkeys.py`).** Exactly **one** pynput `Listener` drives both chord
 hotkeys (pynput `HotKey` objects) and the hold key. Two listeners segfault macOS
@@ -179,13 +182,13 @@ arrive as system events it can't catch). Windows `win32_event_filter`: runs
 itself (off `data.vkCode`, with auto-repeat de-dup) then returns `False`. Only
 single, modifier-free keys qualify (`_build_suppress_tables`); chords pass through.
 
-**Live mode (`app.py` + `changes.py`).** A `QTimer` re-captures the saved region;
-`changes.signature`/`changes.changed` skip OCR on frozen frames, and `Job`'s dedup
-(`pipeline.dedup_outcome`) skips re-translating when the OCR text is unchanged — so
-an animated background doesn't cause constant re-translation.
+**Scope.** Full-screen (hold-to-show) is the only translate mode. The earlier
+region/live modes — a saved-region single-shot translate and a `QTimer`-driven
+auto-retranslate — were **removed** (`Job`, `region_selector.py`, `changes.py`,
+`pipeline.dedup_outcome`, the region/live menu items and hotkeys all gone).
 
-**Overlays.** `overlay.py` (region panel, anchored *beside* the region so it's
-never re-captured) and `screen_overlay.py` (full-screen). Both are click-through
+**Overlays.** `overlay.py` is now just the small "⏳ Translating…" indicator near
+the cursor; `screen_overlay.py` is the full-screen result. Both are click-through
 (`Qt.WindowTransparentForInput`), so overlay text is **deliberately not
 selectable** — selection/copy is delivered via the history `index.html` and "Copy
 last result", not the overlay. `screen_overlay` draws translucent boxes over the
@@ -231,11 +234,8 @@ log once.)
 - Multi-display: the Quartz path captures from the **display under the region**
   (`_display_id_for_region`); a region straddling two displays only yields the
   chosen display's portion.
-- **Accessory mode** (`accessory_mode`, **default ON**): sets
+- **Accessory mode** (`accessory_mode`, **default ON**, no UI toggle): sets
   `NSApplicationActivationPolicyAccessory` (no Dock icon / app menu — tray only) in
   `macos.py`. Default on so the full-screen overlay floats over other apps'
   fullscreen Spaces (a Regular/Dock app switches Spaces on window-order-front).
-  Accessory apps don't get keyboard focus for a frameless overlay, so
-  `_selector_focus_acquire/release` briefly restore Regular policy + `activate_app()`
-  around region selection (restored on **both** the selected and cancelled paths).
-  Applied at launch; toggling asks for a relaunch.
+  Applied at launch.

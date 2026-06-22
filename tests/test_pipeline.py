@@ -62,22 +62,5 @@ class TestIsJunkBlock(unittest.TestCase):
         self.assertFalse(pipeline.is_junk_block(10, 5, 120, 18, geom_y=0, is_macos=False))
 
 
-class TestDedupOutcome(unittest.TestCase):
-    def test_single_shot_text_translates(self):
-        self.assertEqual(pipeline.dedup_outcome("hello", None), "translate")
-
-    def test_single_shot_empty_is_no_text(self):
-        self.assertEqual(pipeline.dedup_outcome("", None), "no_text")
-
-    def test_live_empty_is_vanished(self):
-        self.assertEqual(pipeline.dedup_outcome("", "previous"), "vanished")
-
-    def test_live_same_text_unchanged(self):
-        self.assertEqual(pipeline.dedup_outcome("hello", "hello"), "unchanged")
-
-    def test_live_new_text_translates(self):
-        self.assertEqual(pipeline.dedup_outcome("world", "hello"), "translate")
-
-
 if __name__ == "__main__":
     unittest.main()
