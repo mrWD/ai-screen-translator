@@ -155,7 +155,12 @@ class App:
 
         def _run() -> None:
             try:
-                translator.translate("hello", src, tgt)  # spawns the child + loads the model
+                # Warm with a BATCH, not one string: the first full-screen translate
+                # otherwise pays ctranslate2's batch cold-start (~3s vs ~1s warm).
+                translator.translate_batch(
+                    ["Start", "Continue", "Settings", "Exit", "Load", "Save", "Back", "Options"],
+                    src, tgt,
+                )
             except Exception:
                 pass
 

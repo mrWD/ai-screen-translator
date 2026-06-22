@@ -62,14 +62,23 @@ and replays when free — only if still held. Always keep a Python ref to the ru
 wrapper tears down its C++ object. The same applies to menus/action-groups (see
 `_rebuild_menu`'s explicit ref lists).
 
-**Full-screen hold latency.** Offline (Argos) full-screen is slow — ~76 ms/block
-on-device, serial, so a text-heavy screen (50+ blocks) takes several seconds.
-`ScreenJob._translate_all` sends the whole batch to a `parallel_safe=False` backend
-in ONE call (`translate_batch`, one subprocess round-trip instead of N); network
-backends still fan out across `_MAX_TRANSLATE_WORKERS`. Because the result often
-arrives *after* the user lets go of the hold key, `_on_screen_done` no longer
-discards a released-hold result — it shows it and auto-hides after `_HOLD_LINGER_MS`
-(`_fs_linger`), cancelled by `_on_hold_end`/`_hide_overlays`/a new hold.
+**Full-screen offline speed.** A 50-block screen via the public
+`argostranslate.translate()` is ~5 s (per-call sentence-split + a separate
+ctranslate2 run, and argos chops the batch into 32-token pieces). The Argos
+subprocess (`argos_proc._FastBatch`) instead feeds ALL blocks' sentences into ONE
+`ctranslate2.translate_batch` (big `max_batch_size`, `beam_size=1`, MINISBD
+sentencizer so no stanza/torch) → ~12–19 ms/block (~1 s for 50 blocks). It reaches
+into argostranslate internals so it falls back to per-block `argos.translate` if
+they don't match (pivot pairs, future argos). **Cold start**: the very first
+batch in a fresh subprocess pays ctranslate2's batch warm-up (~3 s), so
+`_warm_translator` warms with a *batch* (not one string) at launch / engine switch.
+The per-(src,target,text) cache makes repeated screens instant. `ScreenJob._translate_all`
+routes `parallel_safe=False` backends through `translate_batch`; network backends
+fan out across `_MAX_TRANSLATE_WORKERS`. `beam_size`/sentencizer are env-tunable
+(`ARGOS_BEAM_SIZE`, `ARGOS_CHUNK_TYPE`) — raise the beam for quality at some speed cost.
+Because the result can arrive *after* the user releases the hold key,
+`_on_screen_done` shows a released-hold result anyway and auto-hides it after
+`_HOLD_LINGER_MS` (`_fs_linger`; cancelled by `_on_hold_end`/`_hide_overlays`/a new hold).
 
 **Perceived latency.** OCR + translate run off-thread, so on an *explicit* press
 the app shows a `⏳ Translating…` placeholder immediately (`_show_loading` /
