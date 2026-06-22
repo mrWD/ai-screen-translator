@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer, QUrl
@@ -60,6 +61,7 @@ class App:
         self._last_fs_image = None       # most recent full-screen frame (for history)
         self._last_result = None         # (original, translation) for "Copy last result"
         self._fs_is_hold = False         # current full-screen request came from the hold key
+        self._fs_t0 = 0.0                # time.monotonic() at the last full-screen key press
         self._loading = False            # a "translating…" indicator is currently shown
         self._fs_linger = QTimer()       # auto-hide a hold result shown after the key was released
         self._fs_linger.setSingleShot(True)
@@ -120,7 +122,7 @@ class App:
     # ---- OCR backend (lazily built, rebuilt when the source language changes) ----
     def _get_ocr(self) -> OCRBackend:
         if self._ocr is None:
-            self._ocr = make_ocr(self.cfg.ocr_engine, self.cfg.source)
+            self._ocr = make_ocr(self.cfg.ocr_engine, self.cfg.source, fast=self.cfg.ocr_fast)
         return self._ocr
 
     def _ocr_name(self) -> str:
@@ -140,29 +142,33 @@ class App:
         return self._translator.name if self._translator is not None else "?"
 
     def _warm_translator(self) -> None:
-        """Pre-load a slow translation backend in the background so the user's first
-        hotkey press isn't a long wait. Only the offline (Argos) engine needs it: it
-        spawns a subprocess and loads the model/torch on first use. Best-effort —
-        if the engine/model isn't ready the warm-up just no-ops."""
-        if self.cfg.translate_engine != "offline":
-            return
-        try:
-            translator = self._get_translator()
-        except Exception:
-            return  # not installed yet — first real translate will report it
+        """Pre-load the slow pieces in the background so the user's FIRST hotkey
+        press isn't a long wait: the OCR backend (imports ocrmac + warms Vision)
+        for any engine, and the offline (Argos) translator (subprocess + model +
+        ctranslate2 batch cold-start). Best-effort — failures just no-op."""
         src = self.cfg.source if self.cfg.source != "auto" else "en"
         tgt = self.cfg.target
+        warm_offline = self.cfg.translate_engine == "offline"
 
         def _run() -> None:
-            try:
-                # Warm with a BATCH, not one string: the first full-screen translate
-                # otherwise pays ctranslate2's batch cold-start (~3s vs ~1s warm).
-                translator.translate_batch(
-                    ["Start", "Continue", "Settings", "Exit", "Load", "Save", "Back", "Options"],
-                    src, tgt,
-                )
+            try:  # OCR: import ocrmac + a tiny recognize to warm Vision's recognizer
+                from PIL import Image
+
+                ocr = self._get_ocr()
+                ocr.recognize(Image.new("RGB", (48, 48), (0, 0, 0)), self.cfg.source)
             except Exception:
                 pass
+            if warm_offline:
+                try:
+                    translator = self._get_translator()
+                    # A BATCH, not one string: the first full-screen translate
+                    # otherwise pays ctranslate2's batch cold-start (~3s vs ~1s).
+                    translator.translate_batch(
+                        ["Start", "Continue", "Settings", "Exit", "Load", "Save", "Back", "Options"],
+                        src, tgt,
+                    )
+                except Exception:
+                    pass
 
         import threading
 
@@ -423,7 +429,8 @@ class App:
 
     # ---- full-screen translation ----
     def translate_fullscreen(self, is_hold: bool = False) -> None:
-        _log.info("translate_fullscreen (is_hold=%s busy=%s)", is_hold, self.gate.busy)
+        self._fs_t0 = time.monotonic()  # T0 = key press, for stage timing
+        _log.info("translate_fullscreen (is_hold=%s busy=%s) T0", is_hold, self.gate.busy)
         if self.gate.busy:
             _log.info("  dropped: a job is already in flight")
             return
@@ -448,6 +455,10 @@ class App:
         _log.info("hold-result linger elapsed -> hiding full-screen overlay")
         self.screen_overlay.hide()
 
+    def _ms(self) -> float:
+        """Milliseconds since the current full-screen request's key press (T0)."""
+        return (time.monotonic() - self._fs_t0) * 1000.0
+
     def _capture_fullscreen(self) -> None:
         screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos())
         if screen is None:
@@ -455,9 +466,12 @@ class App:
         geom = screen.geometry()
         dpr = screen.devicePixelRatio()
         region = Region(geom.x(), geom.y(), geom.width(), geom.height(), dpr)
-        _log.info("capture full screen: geom=%s dpr=%s", (geom.x(), geom.y(), geom.width(), geom.height()), dpr)
+        _log.info("capture start (+%.0fms from press): geom=%s dpr=%s",
+                  self._ms(), (geom.x(), geom.y(), geom.width(), geom.height()), dpr)
         try:
+            t = time.monotonic()
             image = capture.grab(region)
+            _log.info("grab done (+%.0fms; grab took %.0fms)", self._ms(), (time.monotonic() - t) * 1000)
         except Exception as exc:
             _log.exception("capture failed")
             self._notify("Capture failed", str(exc))
@@ -468,15 +482,21 @@ class App:
                 "Grant Screen Recording, or the content is DRM/exclusive-fullscreen.",
             )
             return
+        # Show the "Translating…" indicator as soon as the screen is grabbed (before
+        # building OCR/translator backends), so feedback isn't held up by a first-run
+        # backend build. Grab had to finish first or the indicator would be captured.
+        self._show_loading(self._cursor_rect())
+        _log.info("⏳ Translating shown (+%.0fms from press)", self._ms())
         try:
+            t = time.monotonic()
             ocr = self._get_ocr()
-        except Exception as exc:
-            self._notify("OCR unavailable", str(exc))
-            return
-        try:
             translator = self._get_translator()
+            built_ms = (time.monotonic() - t) * 1000
+            if built_ms > 50:
+                _log.info("backends built (+%.0fms; took %.0fms)", self._ms(), built_ms)
         except Exception as exc:
-            self._notify("Translation unavailable", str(exc))
+            self._clear_loading(hide=True)
+            self._notify("OCR/Translation unavailable", str(exc))
             return
         self._fs_screen = screen
         self._last_fs_image = image  # kept for history persistence in _on_screen_done
@@ -489,12 +509,11 @@ class App:
         self._current_job = job
         self.gate.try_start()
         self.pool.start(job)
-        _log.info("full-screen job dispatched (is_hold=%s)", self._fs_is_hold)
-        self._show_loading(self._cursor_rect())  # instant feedback near the pointer
+        _log.info("job dispatched (+%.0fms from press, is_hold=%s)", self._ms(), self._fs_is_hold)
 
     def _on_screen_done(self, blocks) -> None:
-        _log.info("full-screen job done: %d blocks (is_hold=%s hold_active=%s)",
-                  len(blocks) if blocks else 0, self._fs_is_hold, self.gate.hold_active)
+        _log.info("RESULT shown (+%.0fms from press): %d blocks (is_hold=%s hold_active=%s)",
+                  self._ms(), len(blocks) if blocks else 0, self._fs_is_hold, self.gate.hold_active)
         self._finish_job()
         self._clear_loading(hide=True)  # result goes to the full-screen overlay below
         is_hold = self._fs_is_hold
@@ -627,7 +646,8 @@ class App:
         self.cfg = new
         self.cfg.save()
         # Apply changes that have live side effects.
-        if new.source != old.source or new.ocr_engine != old.ocr_engine:
+        if (new.source != old.source or new.ocr_engine != old.ocr_engine
+                or new.ocr_fast != old.ocr_fast):
             self._ocr = None
         translator_changed = (
             new.translate_engine != old.translate_engine

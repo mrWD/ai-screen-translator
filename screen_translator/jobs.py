@@ -11,12 +11,16 @@ pointer, so a GC'd wrapper would tear down its C++ object mid-run.
 
 from __future__ import annotations
 
+import logging
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QRect, QRunnable, Signal, Slot
 
 from . import pipeline
+
+_log = logging.getLogger(__name__)
 
 # Full-screen translates many blocks; the free/DeepL endpoints are network-bound,
 # so fan the requests out instead of paying N round-trips back to back. Capped so
@@ -95,7 +99,9 @@ class ScreenJob(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
+            t0 = time.monotonic()
             blocks = self._ocr.recognize_blocks(self._image, self._source)
+            t_ocr = time.monotonic()
             img_w, img_h = self._image.size
             scale_x, scale_y = pipeline.compute_scale(img_w, img_h, self._gw, self._gh)
             is_macos = sys.platform == "darwin"
@@ -112,6 +118,11 @@ class ScreenJob(QRunnable):
                 candidates.append((QRect(x, y, w, h), block))
 
             translations = self._translate_all([b.text for _r, b in candidates])
+            t_tr = time.monotonic()
+            _log.info(
+                "ScreenJob: OCR %.0fms (%d raw -> %d kept), translate %.0fms",
+                (t_ocr - t0) * 1000, len(blocks), len(candidates), (t_tr - t_ocr) * 1000,
+            )
 
             results = []
             for (rect, block), translated in zip(candidates, translations):

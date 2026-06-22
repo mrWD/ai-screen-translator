@@ -46,7 +46,9 @@ def setup() -> logging.Logger:
     level = logging.DEBUG if os.environ.get("ST_LOG", "").lower() == "debug" else logging.INFO
     logger.setLevel(level)
     logger.propagate = False
-    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"
+    )
 
     stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(fmt)

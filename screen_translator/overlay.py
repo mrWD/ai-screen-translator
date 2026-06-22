@@ -45,10 +45,12 @@ class Overlay(QtWidgets.QWidget):
 
     # ---- styling ----
     def _restyle(self) -> None:
+        # No explicit font-family: Qt's default is already the OS UI font (SF on
+        # macOS, Segoe UI on Windows). Naming "-apple-system" made Qt scan every
+        # font alias trying to resolve it — a ~650ms one-time hit on first show.
         self._label.setStyleSheet(
             "color: white;"
             f"font-size: {self._font_pt}pt;"
-            "font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;"
             "padding: 10px;"
         )
 

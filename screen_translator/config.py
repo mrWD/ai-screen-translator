@@ -47,6 +47,7 @@ class Config:
     source: str = "en"
     target: str = "ru"
     ocr_engine: str = "auto"  # "auto" | "vision" | "rapidocr"
+    ocr_fast: bool = True     # Apple Vision "fast" recognition (≈2x faster); off = "accurate"
     translate_engine: str = "google"  # "google" | "deepl" | "offline"
     deepl_api_key: str = ""           # required for the "deepl" engine
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default

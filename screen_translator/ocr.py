@@ -48,27 +48,29 @@ class OCRBackend:
 class VisionOCR(OCRBackend):
     name = "vision"
 
-    def __init__(self) -> None:
+    def __init__(self, fast: bool = True) -> None:
         from ocrmac import ocrmac  # imported lazily so non-macOS never needs it
 
         self._ocrmac = ocrmac
+        # "fast" ≈ half the time of "accurate" on a full screen, with no loss on
+        # clean UI text; "accurate" helps small/stylised text. Configurable.
+        self._level = "fast" if fast else "accurate"
 
-    def recognize(self, image: Image.Image, source: str) -> str:
-        kwargs = {"recognition_level": "accurate"}
+    def _kwargs(self, source: str) -> dict:
+        kwargs = {"recognition_level": self._level}
         vision_code = get(source).vision_code
         if vision_code:
             kwargs["language_preference"] = [vision_code]
-        annotations = self._ocrmac.OCR(image, **kwargs).recognize()
+        return kwargs
+
+    def recognize(self, image: Image.Image, source: str) -> str:
+        annotations = self._ocrmac.OCR(image, **self._kwargs(source)).recognize()
         # annotations: list of (text, confidence, bbox)
         lines = [text for (text, _conf, _bbox) in annotations if text and text.strip()]
         return "\n".join(lines)
 
     def recognize_blocks(self, image: Image.Image, source: str) -> "list[Block]":
-        kwargs = {"recognition_level": "accurate"}
-        vision_code = get(source).vision_code
-        if vision_code:
-            kwargs["language_preference"] = [vision_code]
-        annotations = self._ocrmac.OCR(image, **kwargs).recognize()
+        annotations = self._ocrmac.OCR(image, **self._kwargs(source)).recognize()
         width, height = image.size
         blocks = []
         for text, _conf, bbox in annotations:
@@ -119,17 +121,17 @@ class RapidOCRBackend(OCRBackend):
         return blocks
 
 
-def _build(name: str) -> OCRBackend:
+def _build(name: str, fast: bool = True) -> OCRBackend:
     if name == "vision":
         if sys.platform != "darwin":
             raise RuntimeError("Vision OCR is macOS-only")
-        return VisionOCR()
+        return VisionOCR(fast=fast)
     if name == "rapidocr":
         return RapidOCRBackend()
     raise RuntimeError(f"Unknown OCR engine: {name}")
 
 
-def make_ocr(engine: str, source: str) -> OCRBackend:
+def make_ocr(engine: str, source: str, fast: bool = True) -> OCRBackend:
     """Pick a backend. 'auto' = Vision on macOS (unless the source is Cyrillic,
     which Vision can't read), otherwise RapidOCR."""
     cyrillic_source = source != "auto" and get(source).vision_code is None
@@ -149,7 +151,7 @@ def make_ocr(engine: str, source: str) -> OCRBackend:
         if name == "vision" and sys.platform != "darwin":
             continue
         try:
-            return _build(name)
+            return _build(name, fast=fast)
         except Exception as exc:  # pragma: no cover - depends on installed deps
             errors.append(f"{name}: {exc}")
     raise RuntimeError(
