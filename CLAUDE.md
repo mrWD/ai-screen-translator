@@ -117,7 +117,13 @@ app (or a real GUI session).
 and `ArgosBackend` (offline, on-device). **Offline is now the default engine**
 (`Config.translate_engine="offline"`), so `argostranslate` is a hard requirement
 (`requirements.txt`, not optional anymore) and the setup scripts download the en→ru
-pack at install (`screen_translator.download_offline`). The base class centralizes
+pack at install (`screen_translator.download_offline`). Changing source/target in
+the UI calls `App._ensure_offline_model_async`, which checks
+`offline_models.model_installed` (lists installed packs only — no torch import, UI-
+thread-safe) and, if the pair has no pack, OFFERS to download it
+(`_ModelDownloadWorker` off-thread), then rebuilds the translator so the new pack
+applies without an app restart. Missing-model at translate time still surfaces a
+clear `TranslateError` (see `argos_proc._require_route`) instead of a blank overlay. The base class centralizes
 the empty-text guard, the (source,target,text) cache, and the `TranslateError`
 contract. An **explicit** engine is built as-is so its failure surfaces; `auto`
 (only used by the legacy `translate()` helper, not the app) prefers Google, then

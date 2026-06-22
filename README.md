@@ -174,7 +174,9 @@ key, or enable “Use F1, F2 as standard function keys”.
 on-device, no network. The setup scripts (`setup.bat` / `run.sh`) install it and
 download the language pack for the default `source→target` (en→ru) automatically,
 so it works out of the box; this is the ~1 GB the install pulls (ctranslate2 +
-spacy/stanza/torch). Offline can't auto-detect, so set an explicit source. To use a
+spacy/stanza/torch). Offline can't auto-detect, so set an explicit source. If you
+switch to a source/target language whose pack isn't installed, the app **offers to
+download it on the spot** and applies it without a restart. To use a
 different language pair offline, click **Settings → Offline model → Download model
 for the selected languages** (pivots through English when there's no direct pack).
 Or switch to the free **Google** endpoint (no key, needs internet) in Settings —
