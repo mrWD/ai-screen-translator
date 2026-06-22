@@ -1,9 +1,13 @@
-"""Settings dialog: edit languages, OCR engine, live interval, overlay style and
-hotkeys. Returns a new Config; the app applies and persists it."""
+"""Settings dialog: edit languages, OCR/translation engine, overlay style and
+hotkeys. Returns a new Config; the app applies and persists it.
+
+Some config fields are intentionally NOT exposed here (kept at safe defaults):
+`ocr_engine` (always "auto" — it routes correctly), `live_interval_ms`, and
+`accessory_mode` (kept ON so the overlay floats over fullscreen games — exposing
+it as a toggle was a footgun)."""
 
 from __future__ import annotations
 
-import sys
 from dataclasses import replace
 
 from PySide6 import QtWidgets
@@ -60,15 +64,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._select_code(self._target, cfg.target)
         form.addRow("Target language", self._target)
 
-        self._engine = QtWidgets.QComboBox()
-        for engine in ("auto", "vision", "rapidocr"):
-            self._engine.addItem(engine, engine)
-        self._select_code(self._engine, cfg.ocr_engine)
-        form.addRow("OCR engine", self._engine)
-
         self._ocr_fast = QtWidgets.QCheckBox("Fast OCR (≈2× faster; uncheck for accuracy)")
         self._ocr_fast.setChecked(cfg.ocr_fast)
-        form.addRow("", self._ocr_fast)
+        form.addRow("OCR", self._ocr_fast)
 
         self._translate_engine = QtWidgets.QComboBox()
         for engine in ("google", "offline"):
@@ -94,13 +92,6 @@ class SettingsDialog(QtWidgets.QDialog):
         offline_layout.addWidget(self._offline_status)
         form.addRow("Offline model", offline_row)
 
-        self._interval = QtWidgets.QSpinBox()
-        self._interval.setRange(200, 10000)
-        self._interval.setSingleStep(100)
-        self._interval.setSuffix(" ms")
-        self._interval.setValue(cfg.live_interval_ms)
-        form.addRow("Live interval", self._interval)
-
         self._font = QtWidgets.QSpinBox()
         self._font.setRange(8, 72)
         self._font.setValue(cfg.overlay_font_pt)
@@ -112,10 +103,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self._opacity.setValue(cfg.overlay_opacity)
         form.addRow("Overlay opacity", self._opacity)
 
-        self._inplace = QtWidgets.QCheckBox("Replace original text in place (full screen)")
-        self._inplace.setChecked(cfg.overlay_inplace)
-        form.addRow("In-place", self._inplace)
-
         self._save_history = QtWidgets.QCheckBox("Save originals + translations to disk")
         self._save_history.setChecked(cfg.save_history)
         form.addRow("History", self._save_history)
@@ -124,21 +111,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self._save_screenshots.setChecked(cfg.save_screenshots)
         form.addRow("", self._save_screenshots)
 
-        if sys.platform == "darwin":
-            self._accessory = QtWidgets.QCheckBox("Hide Dock icon (menu-bar only) — needs relaunch")
-            self._accessory.setChecked(cfg.accessory_mode)
-            form.addRow("Dock", self._accessory)
-
         self._hk_translate = HotkeyEdit(cfg.hotkey_translate)
         self._hk_hold = HotkeyEdit(cfg.hotkey_hold)
         self._hk_reselect = HotkeyEdit(cfg.hotkey_reselect)
         self._hk_hide = HotkeyEdit(cfg.hotkey_hide)
-        self._hk_live = HotkeyEdit(cfg.hotkey_live)
         form.addRow("Hotkey: translate region", self._hk_translate)
         form.addRow("Full screen: HOLD to show", self._hk_hold)
         form.addRow("Hotkey: reselect", self._hk_reselect)
         form.addRow("Hotkey: hide", self._hk_hide)
-        form.addRow("Hotkey: live mode", self._hk_live)
         hint = QtWidgets.QLabel(
             "Click a field and press the key(s). Single keys like F6 work. "
             "“HOLD to show” shows the full-screen translation only while held."
@@ -193,27 +173,21 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def result_config(self) -> Config:
         """A new Config reflecting the edits (region and anything else preserved)."""
+        # Fields not in the dialog (ocr_engine, live_interval_ms, accessory_mode,
+        # hotkey_live) are preserved from self._cfg by replace().
         return replace(
             self._cfg,
             source=self._source.currentData() or self._cfg.source,
             target=self._target.currentData() or self._cfg.target,
-            ocr_engine=self._engine.currentData() or self._cfg.ocr_engine,
             ocr_fast=self._ocr_fast.isChecked(),
             translate_engine=self._translate_engine.currentData() or self._cfg.translate_engine,
-            live_interval_ms=self._interval.value(),
             overlay_font_pt=self._font.value(),
             overlay_opacity=round(self._opacity.value(), 2),
-            overlay_inplace=self._inplace.isChecked(),
             save_history=self._save_history.isChecked(),
             save_screenshots=self._save_screenshots.isChecked(),
-            accessory_mode=(
-                self._accessory.isChecked()
-                if hasattr(self, "_accessory") else self._cfg.accessory_mode
-            ),
             hotkey_translate=self._hk_translate.hotkey() or self._cfg.hotkey_translate,
             hotkey_hold=self._hk_hold.hotkey() or self._cfg.hotkey_hold,
             hotkey_reselect=self._hk_reselect.hotkey() or self._cfg.hotkey_reselect,
             hotkey_hide=self._hk_hide.hotkey() or self._cfg.hotkey_hide,
-            hotkey_live=self._hk_live.hotkey() or self._cfg.hotkey_live,
             suppress_hotkeys=self._suppress.isChecked(),
         )

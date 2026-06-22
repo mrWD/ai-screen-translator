@@ -60,22 +60,12 @@ skips frozen frames and only re-translates when the OCR'd text actually changes
 (so an animated game background doesn't cause constant re-translation). The panel
 is anchored next to the region, not over it, so the original text stays visible.
 
-**Full-screen mode** (`Cmd+Shift+F`, or the menu): translates the *entire* screen
-at once — it OCRs every block of text and draws each translation in place over the
-original, like Google Lens. Each box grows to fit its translation, overlapping
-boxes are nudged apart, and tiny/menu-bar noise is skipped.
-
-**In-place replacement** (Settings → *In-place*, off by default): in full-screen /
-hold mode, instead of a translucent box *over* the text, each original block is
-painted out with a colour sampled from its surroundings and the translation is
-drawn in its place — closer to a true "replace the text" look. Boxes stay anchored
-on the original so the cover-up aligns; the overlay-opacity setting is ignored here
-(the fill must be solid to erase).
-
-**Hold to translate** (**Right Option `⌥`** by default): hold the key to see the
-whole-screen translation, release to dismiss it — handy for a quick peek without
-toggling. (Right Option is used because it does nothing on its own in macOS,
-unlike the F-keys — F7/F8/F9 are media ⏮/⏯/⏭ and would launch Music.)
+**Full-screen translation — hold `F6`** (reassignable; or **Translator → Translate
+full screen** in the menu for a one-off): translates the *entire* screen at once —
+it OCRs every block of text and draws each translation in a translucent box over
+the original, like Google Lens. Each box grows to fit its translation, overlapping
+boxes are nudged apart, and tiny/menu-bar noise is skipped. It shows **only while
+you hold the key** and disappears on release.
 
 | Hotkey | Action |
 |---|---|
@@ -126,16 +116,15 @@ Every translation is saved to disk, so you can read the original + translation
   Old sessions are pruned to the most recent `history_keep_sessions` (default 20).
 
 **Settings…** (menu) lets you change source/target language, OCR engine,
-**translation engine**, live interval, overlay font size +
-opacity, **in-place replacement**, the macOS **menu-bar-only (no Dock icon)**
-toggle, and all hotkeys — applied live (the Dock-icon toggle needs a relaunch).
-All of it also persists to the config file. On Windows/Linux the default modifier
-is `Ctrl`.
+**translation engine**, Fast OCR, overlay font size + opacity, history, and the
+hotkeys — applied live. All of it also persists to the config file. On
+Windows/Linux the default modifier is `Ctrl`.
 
-On macOS the app runs **menu-bar-only (accessory) by default** — this is what lets
-the full-screen translation float *over* a GeForce Now game's fullscreen Space; a
-normal Dock app would switch you back to the Desktop Space instead. You can re-enable
-the Dock icon under Settings, at the cost of that float-over-fullscreen behaviour.
+On macOS the app runs **menu-bar-only (no Dock icon)** — this is what lets the
+full-screen translation float *over* a GeForce Now game's fullscreen Space; a
+normal Dock app would switch you back to the Desktop Space instead. (It's no longer
+a toggle: a Dock app can't do the float-over-fullscreen, so there's no useful
+choice to expose.)
 
 **Suppress** (Settings) makes a single-key hotkey swallow its normal action — so
 binding e.g. F1 runs the translation *instead of* opening Help. Only single,
@@ -183,8 +172,7 @@ Keys: `source`, `target`, `ocr_engine` (`auto`/`vision`/`rapidocr`), `ocr_fast`,
 `translate_engine` (`google`/`offline`), `offline_model_dir`, `region`,
 `hotkey_translate`, `hotkey_hold`, `hotkey_reselect`, `hotkey_hide`, `hotkey_live`,
 `suppress_hotkeys`, `live_interval_ms`, `overlay_font_pt`, `overlay_opacity`,
-`overlay_inplace`, `save_history`, `save_screenshots`, `history_keep_sessions`,
-`accessory_mode`.
+`save_history`, `save_screenshots`, `history_keep_sessions`, `accessory_mode`.
 
 ---
 
@@ -206,7 +194,7 @@ screen_translator/
   argos_proc.py      # offline-translation subprocess (keeps torch off the Qt worker thread)
   region_selector.py # drag-to-select region UI
   overlay.py         # region-mode translucent click-through panel, anchored beside the region
-  screen_overlay.py  # full-screen in-place overlay (boxes over text, or erase+replace)
+  screen_overlay.py  # full-screen overlay: translucent boxes drawn over the text
   settings_dialog.py # Settings dialog (languages, engines, hotkeys, interval, overlay)
   hotkeys.py         # global hotkeys (pynput) bridged to Qt
   macos.py           # NSWindow tweaks (float over fullscreen) + activation policy

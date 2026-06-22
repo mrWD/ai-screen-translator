@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer, QUrl
@@ -57,6 +58,10 @@ class App:
         self._ocr: OCRBackend | None = None
         self._translator: TranslateBackend | None = None
         self.history = HistoryWriter(self.cfg.history_keep_sessions, self.cfg.save_screenshots)
+        # History writes (PNG encode + JSONL) run off the UI thread so showing a
+        # result never stutters. Single worker = serialized, so HistoryWriter's
+        # _seq/_session_dir stay race-free.
+        self._history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history")
         self._last_capture_image = None  # most recent region/live frame (for history)
         self._last_fs_image = None       # most recent full-screen frame (for history)
         self._last_result = None         # (original, translation) for "Copy last result"
@@ -383,7 +388,8 @@ class App:
             self._last_result = (ocr_text, text)
             if self.cfg.save_history:
                 mode = "live" if self._live_on else "region"
-                self.history.add(
+                self._history_pool.submit(
+                    self.history.add,
                     [(ocr_text, text)], self._last_capture_image,
                     self.cfg.source, self.cfg.target, self._ocr_name(), mode,
                 )
@@ -501,7 +507,7 @@ class App:
         self._last_fs_image = image  # kept for history persistence in _on_screen_done
         job = ScreenJob(
             ocr, translator, image, geom.x(), geom.y(), geom.width(), geom.height(),
-            self.cfg.source, self.cfg.target, self.cfg.overlay_inplace,
+            self.cfg.source, self.cfg.target,
         )
         job.signals.done.connect(self._on_screen_done)
         job.signals.failed.connect(self._on_job_failed)
@@ -525,17 +531,12 @@ class App:
             # away — show it, but auto-hide after a linger so nothing stays stuck.
             _log.info("hold released before result — showing with %dms auto-hide", _HOLD_LINGER_MS)
             self._fs_linger.start(_HOLD_LINGER_MS)
-        overlay_blocks = [
-            (rect, translated, fill_rgb, text_rgb)
-            for (rect, _orig, translated, fill_rgb, text_rgb) in blocks
-        ]
+        overlay_blocks = [(rect, translated) for (rect, _orig, translated) in blocks]
         if self._fs_screen is not None:
             _log.info("showing full-screen overlay with %d blocks on screen %s",
                       len(overlay_blocks), self._fs_screen.name())
-            self.screen_overlay.show_blocks(
-                overlay_blocks, self._fs_screen, inplace=self.cfg.overlay_inplace
-            )
-        pairs = [(orig, translated) for (_rect, orig, translated, _f, _t) in blocks]
+            self.screen_overlay.show_blocks(overlay_blocks, self._fs_screen)
+        pairs = [(orig, translated) for (_rect, orig, translated) in blocks]
         self._last_result = (
             "\n".join(o for o, _ in pairs),
             "\n".join(t for _, t in pairs),
@@ -543,7 +544,8 @@ class App:
         # Persist explicit captures, but NOT transient hold-peeks (they'd flood
         # history with large full-screen screenshots).
         if not is_hold and self.cfg.save_history:
-            self.history.add(
+            self._history_pool.submit(
+                self.history.add,
                 pairs, self._last_fs_image, self.cfg.source, self.cfg.target,
                 self._ocr_name(), "fullscreen",
             )
@@ -652,7 +654,8 @@ class App:
             new.translate_engine != old.translate_engine
             or new.offline_model_dir != old.offline_model_dir
         )
-        if translator_changed:
+        if translator_changed and self._translator is not None:
+            self._translator.close()  # stop the old Argos subprocess before dropping it
             self._translator = None  # source isn't needed: the cache is keyed by it
         self.overlay.set_style(new.overlay_font_pt, new.overlay_opacity)
         self.screen_overlay.set_opacity(new.overlay_opacity)
@@ -724,6 +727,9 @@ class App:
     def quit(self) -> None:
         self._live_timer.stop()
         self.hotkeys.stop()
+        if self._translator is not None:
+            self._translator.close()  # don't leave the Argos subprocess running
+        self._history_pool.shutdown(wait=False)
         self.qt.quit()
 
     def run(self) -> int:

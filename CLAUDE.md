@@ -51,7 +51,7 @@ non-Qt logic is testable:
   translate calls out concurrently (bounded `ThreadPoolExecutor`); the translator
   cache is lock-guarded and a backend opts out via `parallel_safe = False` (Argos).
 - `pipeline.py` — **pure, Qt-free** functions used by the jobs: `compute_scale`,
-  `map_block`, `is_junk_block`, `dedup_outcome`, `sample_block_colors`. Unit-tested.
+  `map_block`, `is_junk_block`, `dedup_outcome`. Unit-tested.
 - `gating.py` — `BusyGate`, the single-in-flight-job + hold-retry **state machine**
   (no Qt). Unit-tested.
 
@@ -188,15 +188,12 @@ an animated background doesn't cause constant re-translation.
 never re-captured) and `screen_overlay.py` (full-screen). Both are click-through
 (`Qt.WindowTransparentForInput`), so overlay text is **deliberately not
 selectable** — selection/copy is delivered via the history `index.html` and "Copy
-last result", not the overlay. `screen_overlay` has two modes: the default
-translucent boxes (grow-to-fit + de-overlap) and opt-in **in-place** mode
-(`overlay_inplace`) that paints an opaque, colour-sampled fill *over* the original
-text and draws the translation in place, boxes anchored on the original so the
-erase aligns. The fill/text colours are sampled from the captured PIL image by
-`pipeline.sample_block_colors`, called in `ScreenJob` **on the worker thread**, and
-passed through as plain `(r,g,b)` tuples (`ScreenJob`'s `done` signal carries
-5-tuples) — `QColor` is constructed only in the overlay's paint on the UI thread
-(never build `QtGui` objects off the UI thread).
+last result", not the overlay. `screen_overlay` draws translucent boxes over the
+text (grow-to-fit + de-overlap); `ScreenJob`'s `done` carries `(rect, orig,
+translated)` 3-tuples and `show_blocks` takes `(rect, text)`. (The old opt-in
+"in-place" mode — opaque colour-sampled fill over the original — was removed
+entirely, along with `pipeline.sample_block_colors`.) `QColor` is built only in the
+overlay's paint on the UI thread (never build `QtGui` objects off the UI thread).
 
 **Config & history.** `config.py` persists a `Config` dataclass as JSON to the OS
 config dir (macOS: `~/Library/Application Support/ai-screen-translator/`), **not**

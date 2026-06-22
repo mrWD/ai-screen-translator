@@ -2,8 +2,7 @@
 
 Run from the repo root:
     ./.venv/bin/python -m unittest discover -s tests -t .
-The pure-geometry/text tests need no third-party deps; the colour-sampling test
-is skipped unless numpy + Pillow are importable.
+These are pure geometry/text checks — no third-party deps needed.
 """
 
 import os
@@ -78,31 +77,6 @@ class TestDedupOutcome(unittest.TestCase):
 
     def test_live_new_text_translates(self):
         self.assertEqual(pipeline.dedup_outcome("world", "hello"), "translate")
-
-
-class TestSampleBlockColors(unittest.TestCase):
-    def setUp(self):
-        try:
-            import numpy  # noqa: F401
-            from PIL import Image  # noqa: F401
-        except ImportError:
-            self.skipTest("numpy/Pillow not installed")
-
-    def test_light_background_gets_dark_text(self):
-        from PIL import Image
-
-        img = Image.new("RGB", (100, 100), (250, 250, 250))
-        fill, text = pipeline.sample_block_colors(img, 40, 40, 20, 10)
-        self.assertEqual(fill, (250, 250, 250))
-        self.assertEqual(text, (20, 20, 24))  # dark text on a light fill
-
-    def test_dark_background_gets_light_text(self):
-        from PIL import Image
-
-        img = Image.new("RGB", (100, 100), (10, 10, 10))
-        fill, text = pipeline.sample_block_colors(img, 40, 40, 20, 10)
-        self.assertEqual(fill, (10, 10, 10))
-        self.assertEqual(text, (240, 240, 245))  # light text on a dark fill
 
 
 if __name__ == "__main__":

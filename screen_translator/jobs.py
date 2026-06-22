@@ -2,7 +2,7 @@
 
 These run on the global QThreadPool and report back via Qt Signals delivered on
 the UI thread. All the framework-free decision logic (scale, block mapping, junk
-filter, dedup, colour sampling) lives in `pipeline`; these classes are just the
+filter, dedup) lives in `pipeline`; these classes are just the
 Qt/threading shell around it.
 
 Keep a Python ref to a running job in the caller — QThreadPool only stores a C++
@@ -71,9 +71,7 @@ class Job(QRunnable):
 
 
 class _ScreenJobSignals(QObject):
-    # list of (screen-logical QRect, original text, translated text, fill_rgb, text_rgb);
-    # the two rgb int-tuples are sampled for in-place mode, or None when it's off.
-    done = Signal(object)
+    done = Signal(object)  # list of (screen-logical QRect, original text, translated text)
     failed = Signal(str)
 
 
@@ -82,7 +80,7 @@ class ScreenJob(QRunnable):
     map each block's image-pixel box to screen-logical coordinates."""
 
     def __init__(self, ocr, translator, image, geom_x, geom_y, geom_w, geom_h,
-                 source, target, inplace=False) -> None:
+                 source, target) -> None:
         super().__init__()
         self.signals = _ScreenJobSignals()
         self._ocr = ocr
@@ -94,7 +92,6 @@ class ScreenJob(QRunnable):
         self._gh = geom_h
         self._source = source
         self._target = target
-        self._inplace = inplace
 
     @Slot()
     def run(self) -> None:
@@ -124,19 +121,11 @@ class ScreenJob(QRunnable):
                 (t_ocr - t0) * 1000, len(blocks), len(candidates), (t_tr - t_ocr) * 1000,
             )
 
-            results = []
-            for (rect, block), translated in zip(candidates, translations):
-                if not translated:
-                    continue
-                fill_rgb = text_rgb = None
-                if self._inplace:
-                    try:
-                        fill_rgb, text_rgb = pipeline.sample_block_colors(
-                            self._image, block.x, block.y, block.w, block.h
-                        )
-                    except Exception:
-                        fill_rgb = text_rgb = None  # degrade to the translucent box
-                results.append((rect, block.text, translated, fill_rgb, text_rgb))
+            results = [
+                (rect, block.text, translated)
+                for (rect, block), translated in zip(candidates, translations)
+                if translated
+            ]
             self.signals.done.emit(results)
         except Exception as exc:
             self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
@@ -144,7 +133,10 @@ class ScreenJob(QRunnable):
     def _translate_all(self, texts: "list[str]") -> "list[str]":
         """Translate each text, fanning out concurrent requests for network-bound
         backends. Order is preserved; the cache de-dupes repeats across the batch.
-        A failure in any request propagates (caught by run -> failed signal)."""
+
+        Per-block errors are tolerated (that block -> ""), so one flaky request
+        doesn't blank a whole screen. But if EVERY block fails (e.g. the network is
+        down), the error is re-raised so the user sees it instead of "no text found"."""
         if not texts:
             return []
         parallel_safe = getattr(self._translator, "parallel_safe", True)
@@ -152,8 +144,16 @@ class ScreenJob(QRunnable):
             # Can't fan out (e.g. Argos) — send the whole batch in one shot so we pay
             # the per-call overhead (a subprocess round-trip) once, not N times.
             return self._translator.translate_batch(texts, self._source, self._target)
+
+        def one(t):
+            try:
+                return (self._translator.translate(t, self._source, self._target), None)
+            except Exception as exc:
+                return ("", exc)
+
         workers = min(_MAX_TRANSLATE_WORKERS, len(texts))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(
-                lambda t: self._translator.translate(t, self._source, self._target), texts
-            ))
+            pairs = list(pool.map(one, texts))
+        if pairs and all(exc is not None for _v, exc in pairs):
+            raise pairs[0][1]  # everything failed -> surface it (likely network down)
+        return [value for value, _exc in pairs]

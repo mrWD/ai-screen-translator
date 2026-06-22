@@ -54,9 +54,12 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   Translate now / Translate full screen / Live mode / Select region / Hide /
   Copy last result / Open translation log / Open history folder / Source &
   Target language / Settings / Quit.
-- **Settings dialog**: languages, OCR engine, live interval, overlay font/opacity,
-  save_history/save_screenshots, and **click-to-record hotkeys** (press a key; single
-  keys like F6 work, chords too).
+- **Settings dialog**: languages, Fast OCR, translation engine + offline-model
+  download, overlay font/opacity, save_history/save_screenshots, Suppress, and
+  **click-to-record hotkeys** (press a key; single keys like F6 work, chords too).
+  Some config fields are deliberately NOT exposed (kept at safe defaults):
+  `ocr_engine` (auto routes correctly), `live_interval_ms`, `accessory_mode` (always
+  on — a footgun as a toggle); `overlay_inplace` and the DeepL backend were removed.
 - **History**: every capture → `~/Library/Application Support/ai-screen-translator/history/<session>/session.jsonl` (+ downscaled screenshot PNG). "Open translation log" builds `index.html` (original|translation pairs, selectable/copyable, works with the app closed).
 
 ---
@@ -82,9 +85,8 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 - `region_selector.py` — drag-to-select region (frameless top-most overlay).
 - `overlay.py` — region-mode translucent click-through panel, anchored BESIDE the
   region (never over it → no self-capture feedback loop).
-- `screen_overlay.py` — full-screen click-through overlay; legacy boxes grow-to-fit +
-  de-overlap, OR in-place mode that erases each block with a sampled fill anchored on
-  the original.
+- `screen_overlay.py` — full-screen click-through overlay; translucent boxes
+  grow-to-fit + de-overlap, drawn over the text.
 - `hotkeys.py` — **single** pynput Listener driving chord HotKeys + hold key.
 - `hotkey_edit.py` — click-to-record hotkey field; Qt key → pynput string.
 - `history.py` — JSONL + PNG persistence + `index.html` renderer.
@@ -140,13 +142,11 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   dead code after a `return` in `HistoryWriter._downscaled`, so nothing was logged
   (screenshots saved, but "Open translation log" was always empty). Fixed — the write
   is back in `add()`.
-- **In-place fill is sampled OFF the UI thread** by `pipeline.sample_block_colors`,
-  called in `jobs.ScreenJob` from the captured PIL image (the click-through overlay
-  can't read screen pixels at paint time) and passed through as plain `(r,g,b)`
-  tuples — `QColor` is built only in the overlay's paint on the UI thread.
-  `ScreenJob`'s `done` signal carries 5-tuples
-  `(rect, orig, translated, fill_rgb, text_rgb)`; in-place layout anchors on the
-  original (no grow/de-overlap) so the erase aligns.
+- **Full-screen overlay**: `ScreenJob`'s `done` signal carries
+  `(rect, orig, translated)` 3-tuples; `screen_overlay.show_blocks` takes
+  `(rect, text)` and draws translucent boxes (grow-to-fit + de-overlap). `QColor` is
+  built only in the overlay's paint on the UI thread (never off it). (The old in-place
+  fill mode + `pipeline.sample_block_colors` were removed.)
 - **Translation backend mirrors OCR**: built lazily on the UI thread
   (`_get_translator`), reset to None on engine/model-dir change, and the instance is
   passed into the worker job — never call a module global from the worker. NOT reset on a
@@ -162,12 +162,9 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
 **Implemented since the last handoff — need live confirmation on the real machine:**
 - **Multi-display capture** — `capture._display_id_for_region` picks the display under
   the region (was `CGMainDisplayID()` only). Verify on a real two-display rig.
-- **Accessory mode** — opt-in (Settings → Dock; needs relaunch). VERIFY the region
-  selector still gets keyboard focus (Esc to cancel + mouse drag) with it on, and that
-  the Dock icon does NOT reappear afterward — this is the exact focus risk it was
-  deferred over.
-- **In-place text replacement** — opt-in (`overlay_inplace`). Confirm the erase aligns
-  and looks right over a real game (flat fill won't match textured/gradient bgs).
+- **Accessory mode** — now **default ON** (no Settings toggle). VERIFY the region
+  selector still gets keyboard focus (Esc to cancel + mouse drag), via
+  `_selector_focus_acquire/release` which briefly flips back to Regular.
 - **Offline translation** — Argos (needs an Argos pack + an explicit source).
   **Settings → Offline model → Download** (`offline_models.download_model`, run on a
   `QRunnable` so the modal dialog stays responsive) pip-installs argostranslate if
@@ -188,6 +185,15 @@ is a design goal (Windows/Linux) but only macOS is exercised so far.
   when the app quits. **Do not "optimize" this back to an in-process call.**
 
 **Still open:**
+- **Capture uses the deprecated `CGDisplayCreateImageForRect`** (`capture._grab_quartz`).
+  Deprecated since macOS 14 but still works (and is fast, ~85ms) on macOS 26. When
+  Apple removes it, migrate to **ScreenCaptureKit** (`pyobjc-framework-ScreenCaptureKit`,
+  not currently a dep): `SCShareableContent.getShareableContent…` → `SCContentFilter`
+  (cache the per-display filter so it isn't rebuilt every grab) → `SCStreamConfiguration`
+  → `SCScreenshotManager.captureImageWithFilter:configuration:completionHandler:`,
+  blocking on a semaphore for the async result, then reuse `_cgimage_to_pil`. Make it
+  the primary path with the current Quartz path as fallback. Deferred for now — no
+  point taking the async-rewrite + dependency risk while the deprecated call still works.
 - **Verify Right Option (`<alt_r>`) hold + hotkey recording on the real machine** — the
   two-listener crash fix still needs a live confirmation.
 - **Verify hotkey suppression (`suppress_hotkeys`).** macOS: needs Accessibility

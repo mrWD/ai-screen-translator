@@ -65,7 +65,6 @@ class Config:
     live_interval_ms: int = 800
     overlay_font_pt: int = 18
     overlay_opacity: float = 0.85
-    overlay_inplace: bool = False  # erase original + draw translation in place (full-screen)
     save_history: bool = True
     save_screenshots: bool = True
     history_keep_sessions: int = 20

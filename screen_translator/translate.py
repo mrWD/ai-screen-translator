@@ -68,6 +68,10 @@ class TranslateBackend:
         this to do them in one shot. Order is preserved; empties stay empty."""
         return [self.translate(t, source, target) for t in texts]
 
+    def close(self) -> None:
+        """Release any external resources (Argos holds a subprocess). No-op by
+        default. Call when the backend is discarded (engine change / app quit)."""
+
 
 class GoogleFreeBackend(TranslateBackend):
     name = "google"
@@ -206,6 +210,28 @@ class ArgosBackend(TranslateBackend):
                             self._cache.pop(next(iter(self._cache)))
                         self._cache[(source, target, text)] = res
         return out
+
+    def close(self) -> None:
+        """Stop the helper subprocess so it doesn't linger (it holds a loaded torch
+        model). Closing stdin makes the child exit its read loop; terminate/kill is
+        a backstop."""
+        with self._proc_lock:
+            proc, self._proc = self._proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def _build(name: str, *, offline_model_dir: str = "") -> TranslateBackend:

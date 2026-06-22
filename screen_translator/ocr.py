@@ -36,7 +36,7 @@ class OCRBackend:
         raise NotImplementedError
 
     def recognize_blocks(self, image: Image.Image, source: str) -> "list[Block]":
-        """Per-block OCR with bounding boxes (for full-screen in-place overlay).
+        """Per-block OCR with bounding boxes (for the full-screen overlay).
         Default: one block spanning the whole image."""
         text = self.recognize(image, source).strip()
         if not text:
