@@ -92,6 +92,18 @@ class TestConfigLoad(unittest.TestCase):
         cfg = self._load_with({"region": {"x": 1}, "live_interval_ms": 9, "source": "ja"}, "darwin")
         self.assertEqual(cfg.source, "ja")
 
+    def test_offline_model_dir_rejects_traversal(self):
+        cfg = self._load_with({"offline_model_dir": "/tmp/models/../../etc"}, "darwin")
+        self.assertEqual(cfg.offline_model_dir, "")
+
+    def test_offline_model_dir_rejects_relative(self):
+        cfg = self._load_with({"offline_model_dir": "models"}, "darwin")
+        self.assertEqual(cfg.offline_model_dir, "")
+
+    def test_offline_model_dir_keeps_clean_absolute(self):
+        cfg = self._load_with({"offline_model_dir": "/opt/argos-models"}, "darwin")
+        self.assertEqual(cfg.offline_model_dir, "/opt/argos-models")
+
 
 class TestOcrRouting(unittest.TestCase):
     def test_auto_off_darwin_never_uses_vision(self):
@@ -135,6 +147,31 @@ class TestSecurePermissions(unittest.TestCase):
             jsonl = sess / "session.jsonl"
             self.assertTrue(jsonl.exists())
             self.assertEqual(stat.S_IMODE(jsonl.stat().st_mode), 0o600)
+
+
+@unittest.skipIf(sys.platform == "win32", "symlink semantics")
+class TestPruneSymlinkSafety(unittest.TestCase):
+    def test_prune_ignores_symlinked_session_and_spares_target(self):
+        from screen_translator.history import HistoryWriter
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "history"
+            root.mkdir()
+            victim = Path(d) / "victim"
+            victim.mkdir()
+            (victim / "important.txt").write_text("keep me")
+            # a real session dir we created
+            (root / "2026-06-23_10-00-00" / "shots").mkdir(parents=True)
+            # a planted symlink with an early-sorting (would-be-pruned-first) name
+            (root / "2000-01-01_00-00-00").symlink_to(victim, target_is_directory=True)
+
+            w = HistoryWriter(keep_sessions=1)
+            w._root = root
+            w._prune_old_sessions()
+
+            # the symlink is never treated as a prunable session, so its target's
+            # contents survive (the old code would have _rmtree'd through it).
+            self.assertTrue((victim / "important.txt").exists())
 
 
 if __name__ == "__main__":

@@ -103,6 +103,14 @@ class Config:
             # otherwise force an engine that can't build here. Let make_ocr route to
             # the cross-platform RapidOCR instead of erroring on startup.
             cfg.ocr_engine = "auto"
+        if cfg.offline_model_dir:
+            # This value is fed to the Argos child as ARGOS_PACKAGES_DIR (where it
+            # installs/extracts model archives). It's user-controlled config, but
+            # guard against a stray relative or "..".-laden path writing models
+            # somewhere unexpected: require a clean absolute path or ignore it.
+            d = cfg.offline_model_dir
+            if not os.path.isabs(d) or ".." in Path(d).parts:
+                cfg.offline_model_dir = ""
         return cfg
 
     def save(self) -> None:
