@@ -70,8 +70,14 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("OCR", self._ocr_fast)
 
         self._translate_engine = QtWidgets.QComboBox()
-        for engine in ("google", "offline"):
-            self._translate_engine.addItem(engine, engine)
+        # Offline first (it's the default/recommended). Data stays the engine id;
+        # labels spell out the privacy trade-off so the choice is informed.
+        self._translate_engine.addItem("Offline — on-device, private (no network)", "offline")
+        self._translate_engine.addItem("Google — free, sends screen text online", "google")
+        self._translate_engine.setToolTip(
+            "Offline runs entirely on your machine. Google sends your on-screen text "
+            "to Google's servers over the internet for translation."
+        )
         self._select_code(self._translate_engine, cfg.translate_engine)
         form.addRow("Translation engine", self._translate_engine)
 

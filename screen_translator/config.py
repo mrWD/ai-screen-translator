@@ -33,6 +33,27 @@ def history_dir() -> Path:
     return _config_dir() / "history"
 
 
+def secure_dir(path: Path) -> Path:
+    """Create `path` (and parents) and tighten it to owner-only (0o700). These dirs
+    hold captured screen content (OCR text, screenshots), so keep other local users
+    out. Best-effort: chmod is a near no-op on Windows (it uses ACLs), and we never
+    fail a write just because the permission tweak didn't take."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def restrict_file(path: Path) -> None:
+    """Tighten an existing file to owner-only (0o600). Best-effort (see secure_dir)."""
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 @dataclass
 class Region:
     x: int
@@ -85,7 +106,8 @@ class Config:
         return cfg
 
     def save(self) -> None:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        secure_dir(CONFIG_PATH.parent)  # owner-only app data dir
         CONFIG_PATH.write_text(
             json.dumps(asdict(self), ensure_ascii=False, indent=2), "utf-8"
         )
+        restrict_file(CONFIG_PATH)

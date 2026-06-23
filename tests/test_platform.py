@@ -6,6 +6,7 @@ are exercised without that hardware. Stdlib + mocks only — no real capture/OCR
 """
 
 import json
+import stat
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,36 @@ class TestOcrRouting(unittest.TestCase):
                 self.assertIn("rapidocr", str(exc).lower())
             else:
                 self.assertNotEqual(backend.name, "vision")
+
+
+@unittest.skipIf(sys.platform == "win32", "POSIX permission semantics")
+class TestSecurePermissions(unittest.TestCase):
+    def test_secure_dir_is_owner_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d) / "x" / "y"
+            config.secure_dir(sub)
+            self.assertTrue(sub.is_dir())
+            self.assertEqual(stat.S_IMODE(sub.stat().st_mode), 0o700)
+
+    def test_restrict_file_is_owner_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "f.txt"
+            f.write_text("secret")
+            config.restrict_file(f)
+            self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
+
+    def test_history_files_owner_only(self):
+        from screen_translator.history import HistoryWriter
+
+        with tempfile.TemporaryDirectory() as d:
+            w = HistoryWriter(keep_sessions=5, save_screenshots=False)
+            w._root = Path(d) / "history"  # redirect off the real config dir
+            w.add([("hello", "привет")], None, "en", "ru", "offline", "fullscreen")
+            sess = w.session_dir
+            self.assertEqual(stat.S_IMODE(sess.stat().st_mode), 0o700)
+            jsonl = sess / "session.jsonl"
+            self.assertTrue(jsonl.exists())
+            self.assertEqual(stat.S_IMODE(jsonl.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":

@@ -198,6 +198,16 @@ for the selected languages** (pivots through English when there's no direct pack
 Or switch to the free **Google** endpoint (no key, needs internet) in Settings —
 and comment out `argostranslate` in `requirements.txt` to skip the heavy install.
 
+**Privacy:** by default **nothing leaves your machine** — the offline engine
+translates entirely on-device. The **Google** engine is the one exception: it sends
+your on-screen text to Google's servers over the internet, so switching to it asks
+for confirmation first. Translation history (text + screenshots) is stored **only
+locally**, in your user config dir, and the files are created **owner-only**
+(`0o600`/`0o700` on macOS/Linux); turn it off with `save_history` /
+`save_screenshots` in Settings. Models, dependencies and (on Windows) Python are
+downloaded from their official sources over HTTPS without app-side hash
+verification — run the first-time setup on a network you trust.
+
 ---
 
 ## GeForce Now / games — what works
