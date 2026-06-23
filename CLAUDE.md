@@ -26,6 +26,14 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -c "from screen_translator.app impo
 ./.venv/bin/python -m screen_translator    # run directly (skips the venv-setup step in run.sh)
 ```
 
+**Turnkey launchers** (user-facing, all gate on a `.venv/.setup_ok` marker so an
+interrupted ~1GB install re-runs setup instead of half-working): macOS — `run.sh`
+or double-click `run.command`; Windows — double-click `run.bat` (auto-runs
+`setup.bat`, which installs Python via winget if missing), plus `run-debug.bat`
+(verbose) and `run-silent.vbs` (no console). All prefetch the offline Argos model
+via `python -m screen_translator.download_offline`. `run.sh`/`setup.bat` require
+Python 3.9+; only `setup.bat` can install it for you.
+
 There is **no linter or formatter** configured, and no GUI test harness. The pure
 logic (`pipeline.py`, `gating.py`) has `unittest` coverage under `tests/`;
 everything Qt/capture/hotkey-bound is still verified by:
