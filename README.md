@@ -6,6 +6,10 @@ while you hold it. Like Google Lens, for your entire screen.
 
 **Free · open source (MIT) · offline by default · macOS, Windows & Linux.**
 
+| Original (a game's untranslated UI) | Hold `F6` → translated in place |
+|:---:|:---:|
+| ![Game UI in its original language, untranslated](assets/not-translated.jpg) | ![The same UI with translations drawn in boxes over the original text](assets/translated.jpg) |
+
 ## Run it
 
 | Platform | How to launch |
@@ -43,6 +47,12 @@ offline engine + language pack); later launches start in seconds. Needs Python 3
    (or **Settings…**).
 2. **Hold `F6`** — the whole screen is translated in place while held; release to
    hide. (`Cmd+Shift+H` hides the overlay; both hotkeys are reassignable.)
+
+The tray menu and the Settings window:
+
+![The menu-bar tray menu](assets/menu.png)
+
+![Settings — languages, translation engine, hotkeys and overlay](assets/settings.png)
 
 Every translation is saved automatically — **Translator → Open translation log**
 opens a browsable, copyable page of every *Original | Translation* pair that still
