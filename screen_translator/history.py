@@ -17,11 +17,17 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 from . import languages
 from .config import history_dir, restrict_file, secure_dir
+
+# Session dirs we create are named "%Y-%m-%d_%H-%M-%S" (with an optional "_N"
+# collision suffix). Pruning only ever deletes names matching this, so a stray
+# file/symlink someone drops in the history dir is never recursively removed.
+_SESSION_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?$")
 
 
 class HistoryWriter:
@@ -103,18 +109,26 @@ class HistoryWriter:
 
     def _prune_old_sessions(self) -> None:
         try:
-            sessions = sorted(
-                (p for p in self._root.iterdir() if p.is_dir()), key=lambda p: p.name
-            )
+            entries = list(self._root.iterdir())
         except FileNotFoundError:
             return
+        # Only consider real session dirs we created: skip symlinks (a planted
+        # symlink with an early-sorting name could otherwise make _rmtree delete its
+        # target's contents) and anything not matching our timestamp naming.
+        sessions = sorted(
+            (p for p in entries
+             if p.is_dir() and not p.is_symlink() and _SESSION_NAME_RE.match(p.name)),
+            key=lambda p: p.name,
+        )
         for old in sessions[: max(0, len(sessions) - self._keep)]:
             _rmtree(old)
 
 
 def _rmtree(path: Path) -> None:
     for child in path.glob("*"):
-        if child.is_dir():
+        # Treat a symlinked dir as a file: unlink the link, never recurse through it
+        # (else deleting a session could reach outside it via a planted symlink).
+        if child.is_dir() and not child.is_symlink():
             _rmtree(child)
         else:
             child.unlink(missing_ok=True)
