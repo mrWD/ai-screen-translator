@@ -505,6 +505,20 @@ class App:
 
     def _apply_settings(self, new: Config) -> None:
         old = self.cfg
+        if new.translate_engine == "google" and old.translate_engine != "google":
+            # Switching to the online engine means screen text leaves the machine —
+            # get explicit consent; on decline keep the previous (offline) engine.
+            answer = QtWidgets.QMessageBox.warning(
+                None,
+                "Send screen text to Google?",
+                "The Google engine sends your on-screen text to Google's servers over "
+                "the internet for translation.\n\n"
+                "The offline engine keeps everything on your device. Use Google anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                new.translate_engine = old.translate_engine
         self.cfg = new
         self.cfg.save()
         # Apply changes that have live side effects.

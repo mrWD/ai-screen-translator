@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import languages
-from .config import history_dir
+from .config import history_dir, restrict_file, secure_dir
 
 
 class HistoryWriter:
@@ -43,7 +43,11 @@ class HistoryWriter:
             while (self._root / name).exists():  # avoid clashing with a same-second run
                 name, n = f"{base}_{n}", n + 1
             session = self._root / name
-            (session / "shots").mkdir(parents=True, exist_ok=True)
+            # Owner-only (0o700) at every level — these dirs hold screenshots/OCR
+            # text of whatever was on screen (passwords, messages, PII).
+            secure_dir(self._root)
+            secure_dir(session)
+            secure_dir(session / "shots")
             self._session_dir = session
             self._prune_old_sessions()
         return self._session_dir
@@ -65,6 +69,7 @@ class HistoryWriter:
             try:
                 self._downscaled(image).save(tmp, "PNG")  # shrink, write tmp, atomic rename
                 tmp.replace(final)
+                restrict_file(final)  # owner-only: screenshots can hold sensitive content
                 shot_rel = f"shots/{seq:03d}.png"
             except Exception:
                 tmp.unlink(missing_ok=True)
@@ -82,8 +87,10 @@ class HistoryWriter:
             "shot": shot_rel,
             "pairs": [{"original": o, "translation": t} for (o, t) in pairs],
         }
-        with (session / "session.jsonl").open("a", encoding="utf-8") as fh:
+        jsonl = session / "session.jsonl"
+        with jsonl.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        restrict_file(jsonl)  # owner-only: contains the full OCR + translation text
 
     @staticmethod
     def _downscaled(image, max_side: int = 1600):
@@ -129,6 +136,7 @@ def build_index(session_dir: Path) -> Path:
                 continue
     out = session_dir / "index.html"
     out.write_text(_render(session_dir.name, records), "utf-8")
+    restrict_file(out)  # owner-only: renders the captured text
     return out
 
 
