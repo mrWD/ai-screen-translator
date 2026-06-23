@@ -14,10 +14,18 @@ option. It is architected so the OCR and translation engines are pluggable.
 
 ## Quick start (macOS)
 
+Double-click **`run.command`** in Finder (it opens Terminal and sets everything
+up), or from a terminal:
+
 ```bash
 cd ai-screen-translator
-./run.sh            # creates .venv, installs deps, launches the menu-bar app
+./run.sh            # first run creates .venv + installs deps; later runs just launch
 ```
+
+Either way the first run creates the venv, installs deps, and downloads the offline
+model; later runs start straight away. **Needs Python 3.9+** — if it's missing the
+script tells you how to get it (`brew install python@3.12`, `xcode-select --install`,
+or python.org).
 
 First, verify the core works without any GUI/permissions:
 
