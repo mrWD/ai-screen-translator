@@ -1,7 +1,9 @@
 """Pluggable translation.
 
-- GoogleFree (deep-translator): free, no API key, the default. Rate-limited.
-- Offline (Argos Translate): on-device, no network, downloads language packs.
+- Offline (Argos Translate): on-device, no network, downloads language packs (default).
+- GoogleFree (deep-translator): free, no API key. Rate-limited; sends text online.
+- LLM (experimental): an OpenAI-compatible chat endpoint (default: local Ollama).
+  Better for prose/context, slower; opt-in.
 
 `make_translator(engine, ...)` returns a ready backend, mirroring ocr.make_ocr.
 Every backend caches by (source, target, text) — game/menu text repeats a lot and
@@ -17,6 +19,8 @@ import json
 import threading
 
 from deep_translator import GoogleTranslator
+
+from .languages import get
 
 _CACHE_MAX = 512
 
@@ -234,25 +238,176 @@ class ArgosBackend(TranslateBackend):
                 pass
 
 
-def _build(name: str, *, offline_model_dir: str = "") -> TranslateBackend:
+class LLMBackend(TranslateBackend):
+    """Experimental LLM tier via an OpenAI-compatible chat endpoint.
+
+    Defaults to a local Ollama server (http://localhost:11434/v1), so it stays
+    offline and keyless; point base_url/api_key at LM Studio, llama.cpp's server, or
+    a cloud provider for higher quality. Better for prose (dialogue/story) than the
+    NMT engines, but slower — hence opt-in. It's a plain HTTP call (stdlib only), so
+    unlike Argos it's safe on a worker thread; we still send the whole screen in ONE
+    request (parallel_safe=False routes it through translate_batch), and fall back to
+    per-block calls if the batched reply can't be parsed/aligned.
+    """
+
+    name = "llm"
+    parallel_safe = False
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434/v1",
+        model: str = "gemma3",
+        api_key: str = "",
+        timeout: float = 60.0,
+    ) -> None:
+        super().__init__()
+        self._base_url = (base_url or "http://localhost:11434/v1").rstrip("/")
+        self._model = model or "gemma3"
+        self._api_key = api_key or ""
+        self._timeout = timeout
+
+    def _chat(self, messages: "list[dict]") -> str:
+        import urllib.error
+        import urllib.request
+
+        payload = json.dumps(
+            {"model": self._model, "messages": messages, "temperature": 0, "stream": False}
+        ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        req = urllib.request.Request(self._base_url + "/chat/completions", data=payload, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise TranslateError(
+                f"Can't reach the LLM endpoint at {self._base_url} ({exc}). "
+                "Start a local server (e.g. `ollama serve`) or fix the URL in Settings."
+            ) from exc
+        try:
+            return data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError) as exc:
+            raise TranslateError(f"Unexpected LLM response: {data!r}") from exc
+
+    @staticmethod
+    def _lang_label(code: str) -> str:
+        return "the source language (auto-detect it)" if code == "auto" else get(code).name
+
+    @staticmethod
+    def _extract_json_obj(text: str):
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            return None
+        try:
+            obj = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        return obj if isinstance(obj, dict) else None
+
+    def _single(self, text: str, source: str, target: str) -> str:
+        content = self._chat([
+            {"role": "system", "content":
+                f"Translate from {self._lang_label(source)} into {self._lang_label(target)}. "
+                "Reply with ONLY the translation — no quotes, no notes, no extra text."},
+            {"role": "user", "content": text},
+        ])
+        return content.strip()
+
+    def _batch_call(self, texts: "list[str]", source: str, target: str) -> "list[str]":
+        items = {str(i): t for i, t in enumerate(texts)}
+        system = (
+            "You are a translation engine for on-screen text (game/app UI, subtitles). "
+            f"Translate each value from {self._lang_label(source)} into {self._lang_label(target)}. "
+            "The input is a JSON object mapping keys to source strings. Reply with ONLY a JSON "
+            "object using the SAME keys, each value the translation — no prose, no extra keys, "
+            "no code fences. Keep UI strings terse; preserve numbers, punctuation and line breaks."
+        )
+        content = self._chat([
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
+        ])
+        obj = self._extract_json_obj(content)
+        if obj is not None:
+            aligned = [str(obj.get(str(i), "") or "") for i in range(len(texts))]
+            if any(a.strip() for a in aligned):
+                return aligned
+        # Couldn't parse/align the batch reply — translate each on its own (robust, slower).
+        return [self._single(t, source, target) for t in texts]
+
+    def _translate(self, text: str, source: str, target: str) -> str:
+        return self._single(text, source, target)
+
+    def translate_batch(self, texts: "list[str]", source: str, target: str) -> "list[str]":
+        out: "list[str]" = [""] * len(texts)
+        miss_idx, miss_txt = [], []
+        for i, raw in enumerate(texts):
+            text = (raw or "").strip()
+            if not text:
+                continue
+            with self._lock:
+                cached = self._cache.get((source, target, text))
+            if cached is not None:
+                out[i] = cached
+            else:
+                miss_idx.append(i)
+                miss_txt.append(text)
+        if not miss_txt:
+            return out
+        results = self._batch_call(miss_txt, source, target)
+        for i, text, res in zip(miss_idx, miss_txt, results):
+            res = (res or "").strip()
+            out[i] = res
+            if res:
+                with self._lock:
+                    if len(self._cache) >= _CACHE_MAX:
+                        self._cache.pop(next(iter(self._cache)))
+                    self._cache[(source, target, text)] = res
+        return out
+
+
+def _build(
+    name: str,
+    *,
+    offline_model_dir: str = "",
+    llm_base_url: str = "",
+    llm_model: str = "",
+    llm_api_key: str = "",
+) -> TranslateBackend:
     if name == "google":
         return GoogleFreeBackend()
     if name == "offline":
         return ArgosBackend(offline_model_dir)
+    if name == "llm":
+        return LLMBackend(llm_base_url, llm_model, llm_api_key)
     raise RuntimeError(f"Unknown translate engine: {name}")
 
 
-def make_translator(engine: str, *, offline_model_dir: str = "") -> TranslateBackend:
+def make_translator(
+    engine: str,
+    *,
+    offline_model_dir: str = "",
+    llm_base_url: str = "",
+    llm_model: str = "",
+    llm_api_key: str = "",
+) -> TranslateBackend:
     """Pick a backend. An explicit engine is built as-is so its failure surfaces a
-    clear error. 'auto' prefers the free Google engine, then offline. Source is not
-    needed here — the backend's cache is keyed by source, so one instance serves all."""
+    clear error. 'auto' prefers the free Google engine, then offline (never the
+    experimental LLM tier — that's explicit-only). Source is not needed here — the
+    backend's cache is keyed by source, so one instance serves all."""
+    kw = dict(
+        offline_model_dir=offline_model_dir,
+        llm_base_url=llm_base_url,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+    )
     if engine and engine != "auto":
-        return _build(engine, offline_model_dir=offline_model_dir)
+        return _build(engine, **kw)
 
     errors = []
     for name in ("google", "offline"):
         try:
-            return _build(name, offline_model_dir=offline_model_dir)
+            return _build(name, **kw)
         except Exception as exc:  # pragma: no cover - depends on installed deps
             errors.append(f"{name}: {exc}")
     raise RuntimeError(
