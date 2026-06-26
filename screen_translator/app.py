@@ -36,6 +36,18 @@ _log = logging.getLogger(__name__)
 _HOLD_LINGER_MS = 7000
 
 
+def _is_local_llm(base_url: str) -> bool:
+    """True if the LLM endpoint is on this machine (localhost), so no screen text
+    leaves the device. Anything else is treated as remote egress."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
 def _is_wayland() -> bool:
     """True on a Linux Wayland session, where pynput's X11 global-hotkey backend
     receives no events. (XWayland still exposes DISPLAY, so require its absence.)"""
@@ -139,6 +151,9 @@ class App:
             self._translator = make_translator(
                 self.cfg.translate_engine,
                 offline_model_dir=self.cfg.offline_model_dir,
+                llm_base_url=self.cfg.llm_base_url,
+                llm_model=self.cfg.llm_model,
+                llm_api_key=self.cfg.llm_api_key,
             )
         return self._translator
 
@@ -514,6 +529,23 @@ class App:
                 "The Google engine sends your on-screen text to Google's servers over "
                 "the internet for translation.\n\n"
                 "The offline engine keeps everything on your device. Use Google anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                new.translate_engine = old.translate_engine
+        elif (
+            new.translate_engine == "llm"
+            and old.translate_engine != "llm"
+            and not _is_local_llm(new.llm_base_url)
+        ):
+            # A remote LLM endpoint also sends screen text off the machine.
+            answer = QtWidgets.QMessageBox.warning(
+                None,
+                "Send screen text to a remote LLM?",
+                f"The LLM endpoint ({new.llm_base_url}) is not on this machine, so your "
+                "on-screen text will be sent to it over the network.\n\n"
+                "Use it anyway?",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No,
             )

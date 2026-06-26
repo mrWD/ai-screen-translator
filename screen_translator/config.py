@@ -69,8 +69,13 @@ class Config:
     target: str = "ru"
     ocr_engine: str = "auto"  # "auto" | "vision" | "rapidocr"
     ocr_fast: bool = True     # Apple Vision "fast" recognition (≈2x faster); off = "accurate"
-    translate_engine: str = "offline"  # "offline" (default, on-device) | "google" (free, needs net)
+    translate_engine: str = "offline"  # "offline" (on-device) | "google" (free, net) | "llm" (experimental)
     offline_model_dir: str = ""       # optional Argos package dir; "" = library default
+    # LLM tier (experimental): an OpenAI-compatible chat endpoint. Default points at a
+    # local Ollama server, so it stays offline + keyless; set a remote URL + key for cloud.
+    llm_base_url: str = "http://localhost:11434/v1"
+    llm_model: str = "gemma3"
+    llm_api_key: str = ""
     hotkey_hide: str = f"{_MOD}+<shift>+h"
     hotkey_hold: str = "<f6>"  # HOLD to show the full-screen translation; release hides it.
     # A single, modifier-free key works best for hold. Pair with suppress_hotkeys so
@@ -96,7 +101,7 @@ class Config:
         # (e.g. the removed region/live/deepl fields from an earlier version).
         known = set(cls.__dataclass_fields__)
         cfg = cls(**{k: v for k, v in data.items() if k in known})
-        if cfg.translate_engine not in ("google", "offline"):
+        if cfg.translate_engine not in ("google", "offline", "llm"):
             cfg.translate_engine = "offline"  # fall back to the default; e.g. a stale "deepl"
         if sys.platform != "darwin" and cfg.ocr_engine == "vision":
             # Apple Vision is macOS-only; a config.json carried from a Mac would

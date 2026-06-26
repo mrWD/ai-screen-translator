@@ -74,12 +74,26 @@ class SettingsDialog(QtWidgets.QDialog):
         # labels spell out the privacy trade-off so the choice is informed.
         self._translate_engine.addItem("Offline — on-device, private (no network)", "offline")
         self._translate_engine.addItem("Google — free, sends screen text online", "google")
+        self._translate_engine.addItem("LLM — local model via Ollama / OpenAI-compatible (experimental)", "llm")
         self._translate_engine.setToolTip(
             "Offline runs entirely on your machine. Google sends your on-screen text "
-            "to Google's servers over the internet for translation."
+            "to Google's servers over the internet. LLM uses an OpenAI-compatible "
+            "endpoint (a local Ollama server by default) — better for prose, slower."
         )
         self._select_code(self._translate_engine, cfg.translate_engine)
         form.addRow("Translation engine", self._translate_engine)
+
+        # LLM tier settings (only relevant when the engine is "llm"; harmless otherwise).
+        self._llm_model = QtWidgets.QLineEdit(cfg.llm_model)
+        self._llm_model.setPlaceholderText("e.g. gemma3, qwen2.5")
+        form.addRow("LLM model", self._llm_model)
+        self._llm_url = QtWidgets.QLineEdit(cfg.llm_base_url)
+        self._llm_url.setPlaceholderText("http://localhost:11434/v1")
+        self._llm_url.setToolTip(
+            "OpenAI-compatible base URL. Default is a local Ollama server "
+            "(install Ollama, then `ollama pull <model>` and `ollama serve`)."
+        )
+        form.addRow("LLM server", self._llm_url)
 
         # One-click setup for the "offline" engine: installs argostranslate (if
         # needed) and downloads the language pack for the languages selected above.
@@ -188,6 +202,8 @@ class SettingsDialog(QtWidgets.QDialog):
             target=self._target.currentData() or self._cfg.target,
             ocr_fast=self._ocr_fast.isChecked(),
             translate_engine=self._translate_engine.currentData() or self._cfg.translate_engine,
+            llm_model=self._llm_model.text().strip() or self._cfg.llm_model,
+            llm_base_url=self._llm_url.text().strip() or self._cfg.llm_base_url,
             overlay_font_pt=self._font.value(),
             overlay_opacity=round(self._opacity.value(), 2),
             save_history=self._save_history.isChecked(),
